@@ -84,18 +84,13 @@
 
     <!-- API Key -->
     <div class="apihub_section">
-        <div class="apihub_label_row">
-            <label class="apihub_label">API Key</label>
-            <span id="apihub_btn_manage_keys" class="apihub_link"><i class="fa-solid fa-key"></i> 管理密钥</span>
-        </div>
+        <label class="apihub_label">API Key</label>
         <div class="apihub_inline_row">
             <input id="apihub_apikey" type="password" class="text_pole apihub_mono flex1" placeholder="sk-..." autocomplete="off" />
             <div id="apihub_btn_show_key" class="menu_button menu_button_icon" title="Toggle visibility">
                 <i class="fa-solid fa-eye"></i>
             </div>
         </div>
-        <!-- Quick-fill from existing ST secrets -->
-        <div id="apihub_secret_chips" class="apihub_chips" style="display:none;"></div>
     </div>
 
     <!-- Models -->
@@ -133,6 +128,9 @@
             </div>
             <div id="apihub_btn_import" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-file-import"></i> <span>Import</span>
+            </div>
+            <div id="apihub_btn_reset" class="menu_button menu_button_icon">
+                <i class="fa-solid fa-rotate-left"></i> <span>Reset</span>
             </div>
         </div>
     </div>

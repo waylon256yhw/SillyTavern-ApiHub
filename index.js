@@ -8,8 +8,7 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, chat_completion_sources, model_list, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
-import { eventSource, event_types } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret, findSecret, secret_state } from '../../../secrets.js';
+import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption } from './url-utils.js';
 
@@ -300,63 +299,6 @@ async function testConnection() {
 
 // ── Native Secret Integration ─────────────────────────────────────
 
-/**
- * Open ST's native key manager dialog for the current connection's format.
- * Uses the document-level '.manage-api-keys' click handler in secrets.js.
- */
-function openNativeKeyManager(format) {
-    const secretKey = FORMAT_TO_SECRET[format];
-    if (!secretKey) return;
-    // Create a temp element to trigger ST's native handler
-    const btn = $(`<div class="manage-api-keys" data-key="${secretKey}" style="display:none;"></div>`);
-    $('body').append(btn);
-    btn.trigger('click');
-    btn.remove();
-}
-
-/**
- * Render chips for existing ST secrets that match the current connection's format.
- * Clicking a chip fills the API key input with the secret's actual value.
- */
-async function renderSecretChips() {
-    const conn = getSelectedConnection();
-    const container = $('#apihub_secret_chips');
-    container.empty();
-
-    if (!conn) {
-        container.hide();
-        return;
-    }
-
-    const secretKey = FORMAT_TO_SECRET[conn.format];
-    const secrets = secret_state[secretKey];
-
-    if (!Array.isArray(secrets) || secrets.length === 0) {
-        container.hide();
-        return;
-    }
-
-    container.show();
-    const hint = $('<span class="apihub_hint" style="margin-right:4px;">已有密钥：</span>');
-    container.append(hint);
-
-    for (const entry of secrets) {
-        const label = entry.label || entry.value || entry.id.slice(0, 8);
-        const activeMark = entry.active ? ' *' : '';
-        const chip = $(`<span class="apihub_chip" data-secret-id="${entry.id}">${label}${activeMark}</span>`);
-        chip.on('click', async () => {
-            const value = await findSecret(secretKey, entry.id);
-            if (value) {
-                $('#apihub_apikey').val(value).trigger('input');
-                toastr.success(`已填入密钥: ${label}`);
-            } else {
-                toastr.error('无法读取密钥');
-            }
-        });
-        container.append(chip);
-    }
-}
-
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
@@ -492,18 +434,9 @@ async function migrateFromNative() {
 
             if (isDuplicate(format, endpoint, profile.model)) continue;
 
-            // Try to read API key from secret-id
+            // Get API key from proxy password (findSecret requires allowKeysExposure)
             let apiKey = '';
-            if (profile['secret-id']) {
-                const secretKey = FORMAT_TO_SECRET[format];
-                try {
-                    const key = await findSecret(secretKey, profile['secret-id']);
-                    if (key) apiKey = key;
-                } catch { /* secret not found */ }
-            }
-
-            // Fallback: try proxy password
-            if (!apiKey && profile.proxy) {
+            if (profile.proxy) {
                 const proxyPreset = proxies.find(p => p.name === profile.proxy);
                 if (proxyPreset && proxyPreset.password) {
                     apiKey = proxyPreset.password;
@@ -537,16 +470,9 @@ async function migrateFromNative() {
         const activeModel = oai_settings[modelField] || '';
 
         if (endpoint && !isDuplicate(activeFormat, endpoint, activeModel)) {
+            // Get API key from proxy_password (can't use findSecret without allowKeysExposure)
             let apiKey = '';
-            const secretKey = FORMAT_TO_SECRET[activeFormat];
-            const secrets = secret_state[secretKey];
-            if (Array.isArray(secrets)) {
-                const s = secrets.find(s => s.active) || secrets[0];
-                if (s) {
-                    try { apiKey = await findSecret(secretKey, s.id); } catch {}
-                }
-            }
-            if (!apiKey && activeFormat !== 'openai' && oai_settings.proxy_password) {
+            if (activeFormat !== 'openai' && oai_settings.proxy_password) {
                 apiKey = oai_settings.proxy_password;
             }
 
@@ -622,7 +548,6 @@ function renderUI() {
     renderConnectionSelect();
     renderConnectionDetails();
     renderUrlPreview();
-    renderSecretChips();
     renderCustomParams();
 }
 
@@ -794,15 +719,34 @@ function escapeHtml(str) {
 // ── Hide native UI elements ────────────────────────────────────────
 
 function hideNativeUI() {
-    // Hide ALL native children of #openai_api except our container and prompt post-processing
-    $('#openai_api').children().not('#apihub_container, #prompt_post_processing_form').hide();
+    // Hide the source selector (we replace it with format + connection selector)
+    const sourceSelect = $('#chat_completion_source');
+    sourceSelect.prevAll('h4').first().hide();
+    sourceSelect.hide();
 
-    // Hide the Connection Manager (Connection Profile) UI at top of #rm_api_block
+    // Hide the Reverse Proxy inline-drawer (we manage endpoints)
+    $('#openai_reverse_proxy').closest('.inline-drawer').hide();
+    $('#ReverseProxyWarningMessage').hide();
+
+    // Hide custom source URL and model inputs (we manage these)
+    $('#custom_api_url_text').closest('.range-block').hide();
+    $('#custom_model_id').closest('.range-block').hide();
+    $('#customize_additional_parameters').hide();
+
+    // Hide Connection Manager UI at top of #rm_api_block
     $('#connection_profiles').closest('.wide100p').hide();
 
-    // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
+    // Native source forms (API key inputs) remain visible — managed by toggleChatCompletionForms
+
+    // Re-apply after source changes
     $(document).on('change', '#chat_completion_source', () => {
-        $('#openai_api').children().not('#apihub_container, #prompt_post_processing_form').hide();
+        sourceSelect.prevAll('h4').first().hide();
+        sourceSelect.hide();
+        $('#openai_reverse_proxy').closest('.inline-drawer').hide();
+        $('#ReverseProxyWarningMessage').hide();
+        $('#custom_api_url_text').closest('.range-block').hide();
+        $('#custom_model_id').closest('.range-block').hide();
+        $('#customize_additional_parameters').hide();
     });
 }
 
@@ -814,7 +758,6 @@ function bindEvents() {
         renderConnectionDetails();
         renderUrlPreview();
         renderCustomParams();
-        renderSecretChips();
     });
 
     // Format change
@@ -829,7 +772,6 @@ function bindEvents() {
         });
         renderConnectionDetails();
         renderUrlPreview();
-        renderSecretChips();
     });
 
     // Endpoint input → live preview
@@ -947,16 +889,22 @@ function bindEvents() {
     // Test connection
     $('#apihub_btn_test').on('click', testConnection);
 
-    // Manage keys (native ST key manager)
-    $('#apihub_btn_manage_keys').on('click', () => {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        openNativeKeyManager(conn.format);
-    });
-
     // Import/Export
     $('#apihub_btn_export').on('click', exportConnections);
     $('#apihub_btn_import').on('click', importConnections);
+
+    // Reset all ApiHub data
+    $('#apihub_btn_reset').on('click', async () => {
+        const confirmed = await callGenericPopup(
+            '清除所有 API Hub 数据（连接配置、激活状态），恢复为初始 3 个预设。\n\n不会影响 SillyTavern 原生配置。',
+            POPUP_TYPE.CONFIRM,
+        );
+        if (!confirmed) return;
+        extension_settings.apiHub = structuredClone(DEFAULT_SETTINGS);
+        saveSettingsDebounced();
+        restoreState();
+        toastr.success('API Hub 已重置');
+    });
 
     // Migrate from native config
     $('#apihub_btn_migrate').on('click', async () => {
@@ -1120,11 +1068,6 @@ jQuery(async () => {
 
     // Bind events
     bindEvents();
-
-    // Refresh secret chips when ST secrets change
-    [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED].forEach(evt => {
-        eventSource.on(evt, () => renderSecretChips());
-    });
 
     // Restore saved state
     restoreState();
