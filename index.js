@@ -321,6 +321,11 @@ async function fetchModels() {
     const conn = getSelectedConnection();
     if (!conn) return;
 
+    // Show loading state on fetch button
+    const fetchBtn = $('#apihub_btn_fetch_models');
+    const originalHtml = fetchBtn.html();
+    fetchBtn.html('<i class="fa-solid fa-spinner fa-spin"></i> 拉取中...').css('pointer-events', 'none');
+
     try {
         // Official endpoints use native ST flow; all others use CUSTOM source GET /v1/models
         const officialHosts = {
@@ -383,6 +388,8 @@ async function fetchModels() {
         toastr.error(err.message || '拉取失败');
     }
 
+    // Restore fetch button
+    fetchBtn.html(originalHtml).css('pointer-events', '');
     renderUI();
 }
 
