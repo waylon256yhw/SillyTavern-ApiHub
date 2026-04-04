@@ -84,16 +84,19 @@ export function computeUrlPreview(format, baseUrl, model) {
     const { normalized: raw, literal } = normalizeUrl(baseUrl, format);
 
     let chatUrl, modelsUrl, authScheme;
+    let previewLiteral = literal;
 
     if (format === 'anthropic') {
         chatUrl = `${raw}/messages`;
-        modelsUrl = `${raw}/models`;
         authScheme = 'x-api-key: <api_key>';
     } else if (format === 'gemini') {
+        // ST's makersuite backend adds /{apiVersion}/ itself, so preview from raw base URL
+        const geminiBase = baseUrl.trim().replace(/\/+$/, '').replace(/\/(v1|v1beta|v2|v3)$/, '');
+        const apiVersion = PROVIDER_VERSION.gemini;
         const m = model || '<model>';
-        chatUrl = `${raw}/models/${m}:streamGenerateContent?key=***`;
-        modelsUrl = `${raw}/models?key=***`;
+        chatUrl = `${geminiBase}/${apiVersion}/models/${m}:streamGenerateContent?key=***`;
         authScheme = 'URL query key=';
+        previewLiteral = false; // literal mode doesn't apply to gemini (ST controls the path)
     } else {
         // openai and any compatible
         chatUrl = `${raw}/chat/completions`;
@@ -103,12 +106,10 @@ export function computeUrlPreview(format, baseUrl, model) {
 
     return {
         normalizedBaseUrl: raw,
-        literal,
+        literal: previewLiteral,
         authScheme,
         chatUrl,
         chatMethod: 'POST',
-        modelsUrl,
-        modelsMethod: 'GET',
     };
 }
 
