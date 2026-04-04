@@ -854,37 +854,70 @@ function escapeHtml(str) {
 
 // ── Hide native UI elements ────────────────────────────────────────
 
-function hideNativeUI() {
-    // Hide the source selector (we replace it with format + connection selector)
+let nativeUIVisible = false;
+
+function applyNativeUIVisibility() {
     const sourceSelect = $('#chat_completion_source');
-    sourceSelect.prevAll('h4').first().hide();
-    sourceSelect.hide();
-
-    // Hide the Reverse Proxy inline-drawer (we manage endpoints)
-    $('#openai_reverse_proxy').closest('.inline-drawer').hide();
-    $('#ReverseProxyWarningMessage').hide();
-
-    // Hide all native source forms (API key + model — we manage both)
-    // They use data-source attributes and get re-shown by toggleChatCompletionForms
     const sourceForms = '#openai_form, #claude_form, #makersuite_form, #custom_form';
-    $(sourceForms).hide();
 
-    // Hide Connection Manager UI at top of #rm_api_block
-    $('#connection_profiles').closest('.wide100p').hide();
-
-    // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
-    $(document).on('change', '#chat_completion_source', () => {
+    if (nativeUIVisible) {
+        // Show native, hide ApiHub content (keep branding bar visible for toggle)
+        $('#apihub_container').children().not('.apihub_branding').hide();
+        sourceSelect.prevAll('h4').first().show();
+        sourceSelect.show();
+        $('#openai_reverse_proxy').closest('.inline-drawer').show();
+        $('#ReverseProxyWarningMessage').show();
+        $(sourceForms).show();
+        $('#connection_profiles').closest('.wide100p').show();
+        // Trigger toggleChatCompletionForms to show correct source form
+        sourceSelect.trigger('change');
+    } else {
+        // Show ApiHub, hide native
+        $('#apihub_container').children().show();
         sourceSelect.prevAll('h4').first().hide();
         sourceSelect.hide();
         $('#openai_reverse_proxy').closest('.inline-drawer').hide();
         $('#ReverseProxyWarningMessage').hide();
         $(sourceForms).hide();
+        $('#connection_profiles').closest('.wide100p').hide();
+    }
+}
+
+function hideNativeUI() {
+    nativeUIVisible = false;
+    applyNativeUIVisibility();
+
+    // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
+    $(document).on('change', '#chat_completion_source', () => {
+        if (!nativeUIVisible) {
+            const sourceForms = '#openai_form, #claude_form, #makersuite_form, #custom_form';
+            $('#chat_completion_source').prevAll('h4').first().hide();
+            $('#chat_completion_source').hide();
+            $('#openai_reverse_proxy').closest('.inline-drawer').hide();
+            $('#ReverseProxyWarningMessage').hide();
+            $(sourceForms).hide();
+        }
     });
 }
 
 // ── Event Binding ──────────────────────────────────────────────────
 
 function bindEvents() {
+    // Toggle native/ApiHub UI
+    $('#apihub_btn_toggle_native').on('click', () => {
+        nativeUIVisible = !nativeUIVisible;
+        applyNativeUIVisibility();
+        const icon = $('#apihub_btn_toggle_native i');
+        const text = $('#apihub_btn_toggle_native');
+        if (nativeUIVisible) {
+            icon.removeClass('fa-eye').addClass('fa-eye-slash');
+            text.html('<i class="fa-solid fa-eye-slash"></i> API Hub');
+        } else {
+            icon.removeClass('fa-eye-slash').addClass('fa-eye');
+            text.html('<i class="fa-solid fa-eye"></i> Native UI');
+        }
+    });
+
     // Connection selector — switch = activate
     $('#apihub_connection_select').on('change', async () => {
         const conn = getSelectedConnection();
