@@ -1,4 +1,10 @@
 <div id="apihub_container" class="apihub">
+    <!-- Branding -->
+    <div class="apihub_branding">
+        <span class="apihub_brand_name">API Hub</span>
+        <span class="apihub_brand_ver">v0.1.0</span>
+    </div>
+
     <!-- Connection selector bar -->
     <div class="apihub_section">
         <div class="apihub_connection_bar">
@@ -58,17 +64,13 @@
     <div class="apihub_section">
         <label class="apihub_label">Endpoint URL</label>
         <input id="apihub_endpoint" type="text" class="text_pole apihub_mono" placeholder="https://api.openai.com" />
-        <small class="apihub_hint">Append <code>#</code> to skip URL normalization (literal mode)</small>
+        <small class="apihub_hint">末尾加 <code>#</code> 跳过 URL 自动归一化（直连模式）</small>
     </div>
 
     <!-- URL Preview -->
     <div id="apihub_url_preview" class="apihub_section apihub_preview" style="display:none;">
-        <div class="apihub_preview_row">
-            <span class="apihub_preview_label">Chat</span>
-            <span class="apihub_preview_method" id="apihub_preview_chat_method">POST</span>
-            <span class="apihub_preview_url" id="apihub_preview_chat_url"></span>
-        </div>
-        <span id="apihub_preview_literal" class="apihub_badge_warn" style="display:none;">Literal Mode</span>
+        <span class="apihub_preview_url" id="apihub_preview_chat_url"></span>
+        <span id="apihub_preview_literal" class="apihub_badge_warn" style="display:none;">直连模式：URL 将原样使用，不自动拼接版本号和路径</span>
     </div>
 
     <!-- API Key -->
@@ -91,6 +93,7 @@
             <label class="apihub_label">Model</label>
             <div class="apihub_label_actions">
                 <span id="apihub_btn_add_model" class="apihub_link">+ Add</span>
+                <span id="apihub_btn_delete_model" class="apihub_link" style="display:none;"><i class="fa-solid fa-xmark"></i> Delete</span>
                 <span id="apihub_btn_fetch_models" class="apihub_link"><i class="fa-solid fa-rotate"></i> Fetch</span>
             </div>
         </div>
@@ -118,9 +121,13 @@
             <div id="apihub_btn_import" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-file-import"></i> <span>Import</span>
             </div>
-            <div id="apihub_btn_reset" class="menu_button menu_button_icon">
-                <i class="fa-solid fa-rotate-left"></i> <span>Reset</span>
-            </div>
+        </div>
+    </div>
+
+    <!-- Reset (dangerous) -->
+    <div class="apihub_section">
+        <div id="apihub_btn_reset" class="apihub_reset_btn" title="清除所有 API Hub 数据">
+            <i class="fa-solid fa-triangle-exclamation"></i> Reset
         </div>
     </div>
 

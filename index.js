@@ -742,10 +742,12 @@ function renderModelList(conn) {
     if (conn.model && conn.availableModels.includes(conn.model)) {
         select.val(conn.model);
     } else if (conn.model) {
-        // Model not in list but set — add it
         select.prepend($('<option>', { value: conn.model, text: conn.model }));
         select.val(conn.model);
     }
+
+    // Show/hide delete button based on model count
+    $('#apihub_btn_delete_model').toggle(conn.availableModels.length > 0);
 }
 
 function renderUrlPreview() {
@@ -761,12 +763,11 @@ function renderUrlPreview() {
         return;
     }
 
-    $('#apihub_preview_chat_method').text(preview.chatMethod);
-    $('#apihub_preview_chat_url').text(preview.chatUrl);
-
     if (preview.literal) {
+        $('#apihub_preview_chat_url').text(preview.chatUrl);
         $('#apihub_preview_literal').show();
     } else {
+        $('#apihub_preview_chat_url').text(preview.chatUrl);
         $('#apihub_preview_literal').hide();
     }
 
@@ -997,7 +998,19 @@ function bindEvents() {
         if (e.key === 'Escape') $('#apihub_add_model_row').hide();
     });
 
-    // Test connection
+    // Delete selected model
+    $('#apihub_btn_delete_model').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        const selected = $('#apihub_model_select').val();
+        if (!selected) return;
+        conn.availableModels = conn.availableModels.filter(m => m !== selected);
+        const newModel = conn.availableModels[0] || '';
+        updateConnection(conn.id, { model: newModel });
+        renderModelList(conn);
+        renderUrlPreview();
+    });
+
     // Open native key manager
     $('#apihub_btn_manage_keys').on('click', () => {
         const conn = getSelectedConnection();

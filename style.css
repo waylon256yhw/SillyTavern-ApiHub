@@ -9,6 +9,26 @@
     border-bottom: 1px solid var(--SmartThemeBorderColor);
 }
 
+/* Branding */
+.apihub_branding {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding-bottom: 4px;
+}
+
+.apihub_brand_name {
+    font-size: calc(var(--mainFontSize) * 1.1);
+    font-weight: 700;
+    color: var(--SmartThemeEmColor, #5588cc);
+}
+
+.apihub_brand_ver {
+    font-size: calc(var(--mainFontSize) * 0.7);
+    color: var(--SmartThemeQuoteColor, #888);
+    opacity: 0.5;
+}
+
 .apihub_section {
     display: flex;
     flex-direction: column;
@@ -96,40 +116,19 @@
 
 /* URL Preview panel */
 .apihub_preview {
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #000) 30%, transparent);
-    border: 1px solid var(--SmartThemeBorderColor);
+    border: 1px dashed var(--SmartThemeBorderColor);
     border-radius: 6px;
     padding: 8px 10px;
-    gap: 4px;
-}
-
-.apihub_preview_row {
-    display: flex;
-    align-items: baseline;
     gap: 6px;
-    font-family: var(--monoFontFamily, 'Courier New', monospace);
-    font-size: calc(var(--mainFontSize) * 0.78);
-    line-height: 1.5;
-}
-
-.apihub_preview_label {
-    color: var(--SmartThemeQuoteColor, #888);
-    opacity: 0.6;
-    min-width: 48px;
-    flex-shrink: 0;
-}
-
-.apihub_preview_method {
-    color: var(--SmartThemeEmColor, #8899aa);
-    font-weight: 600;
-    flex-shrink: 0;
 }
 
 .apihub_preview_url {
+    font-family: var(--monoFontFamily, 'Courier New', monospace);
+    font-size: calc(var(--mainFontSize) * 0.78);
     color: var(--SmartThemeBodyColor);
     opacity: 0.8;
     word-break: break-all;
-    min-width: 0;
+    line-height: 1.5;
 }
 
 /* Badges */
@@ -188,6 +187,25 @@
 
 .apihub_actions .menu_button {
     flex: 0 0 auto;
+}
+
+/* Reset danger button */
+.apihub_reset_btn {
+    font-size: calc(var(--mainFontSize) * 0.75);
+    color: #f87171;
+    opacity: 0.5;
+    cursor: pointer;
+    user-select: none;
+    text-align: center;
+    padding: 4px;
+    border: 1px dashed #f8717144;
+    border-radius: 4px;
+    transition: opacity 0.15s;
+}
+
+.apihub_reset_btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, #f87171 10%, transparent);
 }
 
 /* Status indicator */
