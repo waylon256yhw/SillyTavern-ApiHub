@@ -579,13 +579,13 @@ const SOURCE_TO_FORMAT = {
  */
 async function migrateFromNative() {
     const migrated = [];
-    // Primary dedup: format+endpoint+model for CM profiles (preserves same-endpoint different-model configs)
-    const cmKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}|${c.model}`));
-    // Secondary dedup: endpoint-only for active config & proxy presets (avoid duplicating CM results)
+    // Primary dedup: format+endpoint for CM profiles (same endpoint = same connection, model can differ)
+    const cmKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}`));
+    // Secondary dedup: endpoint-only for proxy presets (avoid duplicating CM results)
     const endpointSet = new Set(getConnections().map(c => c.endpoint));
 
-    function isCmDuplicate(format, endpoint, model) {
-        return cmKeys.has(`${format}|${endpoint}|${model || ''}`);
+    function isCmDuplicate(format, endpoint) {
+        return cmKeys.has(`${format}|${endpoint}`);
     }
 
     function isEndpointDuplicate(endpoint) {
@@ -611,7 +611,7 @@ async function migrateFromNative() {
 
     function addConn(conn) {
         getConnections().push(conn);
-        cmKeys.add(`${conn.format}|${conn.endpoint}|${conn.model}`);
+        cmKeys.add(`${conn.format}|${conn.endpoint}`);
         endpointSet.add(conn.endpoint);
         migrated.push(conn);
     }
@@ -650,7 +650,7 @@ async function migrateFromNative() {
                 endpoint = getFormatOption(format).defaultEndpoint;
             }
 
-            if (isCmDuplicate(format, endpoint, profile.model)) continue;
+            if (isCmDuplicate(format, endpoint)) continue;
 
             // Get API key from proxy password (findSecret requires allowKeysExposure)
             let apiKey = '';
