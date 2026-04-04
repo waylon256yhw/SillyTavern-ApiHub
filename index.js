@@ -6,7 +6,7 @@
  */
 
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { oai_settings, chat_completion_sources, model_list, proxies } from '../../../openai.js';
+import { oai_settings, chat_completion_sources, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
 import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
@@ -233,51 +233,76 @@ async function fetchModels() {
     const conn = getSelectedConnection();
     if (!conn) return;
 
-    // Ensure this connection is activated so source/URL/key are set
-    await activateConnection(conn.id);
-
     updateConnection(conn.id, { status: 'testing', statusMessage: 'Fetching models...' });
     renderStatus(conn);
 
-    // Trigger the native Connect button which calls getStatusOpen()
-    $('#api_button_openai').trigger('click');
+    try {
+        const { normalized } = normalizeUrl(conn.endpoint, conn.format);
 
-    // Wait for model_list to be reassigned (poll with timeout)
-    // ST's getStatusOpen does `model_list = data.map(...)`, so the reference changes
-    const startRef = model_list;
-    let waited = 0;
-    const interval = 200;
-    const timeout = 15000;
-
-    await new Promise((resolve) => {
-        const check = () => {
-            waited += interval;
-            if (model_list !== startRef || waited >= timeout) {
-                resolve();
-                return;
-            }
-            setTimeout(check, interval);
-        };
-        setTimeout(check, interval);
-    });
-
-    // Store fetched models into connection
-    if (model_list.length > 0) {
-        const models = model_list.map(m => m.id || m.name || String(m));
-        updateConnection(conn.id, {
-            availableModels: models,
-            status: 'connected',
-            statusMessage: `${models.length} models found`,
-        });
-        // Auto-select first model if current model not in list
-        if (!models.includes(conn.model) && models.length > 0) {
-            updateConnection(conn.id, { model: models[0] });
+        // Write API key to the correct secret slot for this format
+        const secretKey = FORMAT_TO_SECRET[conn.format];
+        if (conn.apiKey && secretKey) {
+            await writeSecret(secretKey, conn.apiKey);
         }
-    } else {
-        updateConnection(conn.id, {
-            status: 'error',
-            statusMessage: 'No models returned',
+
+        // Build request body based on format — each uses a different ST backend path
+        let body;
+        if (conn.format === 'gemini') {
+            // MAKERSUITE branch: builds /{apiVersion}/models?key=...
+            body = {
+                chat_completion_source: chat_completion_sources.MAKERSUITE,
+                reverse_proxy: normalized,
+                proxy_password: conn.apiKey,
+            };
+        } else if (conn.format === 'anthropic') {
+            // Claude source is in noValidateSources — ST skips it.
+            // Use CUSTOM source as workaround: GET {url}/models with Bearer auth
+            // Works for most Anthropic proxies (Clewdr, etc.)
+            body = {
+                chat_completion_source: chat_completion_sources.CUSTOM,
+                custom_url: normalized,
+                custom_include_headers: kvPairsToYaml(conn.includeHeaders),
+            };
+        } else {
+            // OpenAI compatible: CUSTOM source with Bearer auth
+            body = {
+                chat_completion_source: chat_completion_sources.CUSTOM,
+                custom_url: normalized,
+                custom_include_headers: kvPairsToYaml(conn.includeHeaders),
+            };
+        }
+
+        const response = await fetch('/api/backends/chat-completions/status', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
         });
+
+        if (response.ok) {
+            const result = await response.json();
+            const rawModels = result?.data || [];
+            const models = Array.isArray(rawModels)
+                ? rawModels.map(m => m.id || m.name || String(m)).filter(Boolean)
+                : [];
+
+            if (models.length > 0) {
+                updateConnection(conn.id, {
+                    availableModels: models,
+                    status: 'connected',
+                    statusMessage: `${models.length} models found`,
+                });
+                if (!models.includes(conn.model)) {
+                    updateConnection(conn.id, { model: models[0] });
+                }
+            } else {
+                updateConnection(conn.id, { status: 'error', statusMessage: 'No models returned' });
+            }
+        } else {
+            const errText = await response.text().catch(() => '');
+            updateConnection(conn.id, { status: 'error', statusMessage: `Fetch failed: ${response.status} ${errText.slice(0, 100)}` });
+        }
+    } catch (err) {
+        updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Fetch failed' });
     }
 
     renderUI();
