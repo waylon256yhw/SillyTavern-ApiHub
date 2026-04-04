@@ -455,20 +455,31 @@ async function migrateFromNative() {
 
     // 1. Migrate from Connection Manager profiles (primary source)
     const cmProfiles = extension_settings?.connectionManager?.profiles;
+    const cmReferencedProxyNames = new Set(); // track proxy names used by CM profiles
+
     if (Array.isArray(cmProfiles)) {
         for (const profile of cmProfiles) {
             const format = SOURCE_TO_FORMAT[profile.api];
             if (!format) continue; // unsupported source, skip
 
-            // Resolve endpoint
-            let endpoint = (profile['api-url'] || '').trim();
+            // Track referenced proxy names
+            if (profile.proxy) cmReferencedProxyNames.add(profile.proxy);
 
-            // For proxy-based sources, resolve proxy preset URL if api-url is empty
-            if (!endpoint && profile.proxy && format !== 'openai') {
+            // Resolve endpoint
+            let endpoint = '';
+
+            // For non-openai formats with a proxy, the proxy URL is the real endpoint
+            // (api-url may be a stale snapshot from when the profile was saved)
+            if (profile.proxy && format !== 'openai') {
                 const proxyPreset = proxies.find(p => p.name === profile.proxy);
                 if (proxyPreset && proxyPreset.url) {
                     endpoint = proxyPreset.url.trim();
                 }
+            }
+
+            // Fall back to api-url (always used for openai/custom, fallback for others)
+            if (!endpoint) {
+                endpoint = (profile['api-url'] || '').trim();
             }
 
             // Fallback to default endpoint
@@ -499,6 +510,11 @@ async function migrateFromNative() {
         }
     }
 
+    // Helper: extract host from URL for fuzzy endpoint comparison
+    function getUrlHost(url) {
+        try { return new URL(url).host; } catch { return url; }
+    }
+
     // 2. Migrate active config if not already covered by profiles
     const activeSource = oai_settings.chat_completion_source;
     const activeFormat = SOURCE_TO_FORMAT[activeSource];
@@ -510,22 +526,24 @@ async function migrateFromNative() {
             endpoint = (oai_settings.reverse_proxy || '').trim() || getFormatOption(activeFormat).defaultEndpoint;
         }
 
-        const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
-        const activeModel = oai_settings[modelField] || '';
+        // Use host-based dedup: /v1 vs /v1beta on same host = same server
+        const activeHost = getUrlHost(endpoint);
+        const hostAlreadyExists = [...endpointSet].some(ep => getUrlHost(ep) === activeHost);
 
-        if (endpoint && !isEndpointDuplicate(endpoint)) {
+        if (endpoint && !hostAlreadyExists) {
             // Get API key from proxy_password (can't use findSecret without allowKeysExposure)
             let apiKey = '';
             if (activeFormat !== 'openai' && oai_settings.proxy_password) {
                 apiKey = oai_settings.proxy_password;
             }
 
+            const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
             const conn = makeConn(
                 `${getFormatOption(activeFormat).label} (active)`,
                 activeFormat,
                 endpoint,
                 apiKey,
-                activeModel,
+                oai_settings[modelField] || '',
             );
 
             // Migrate custom params for openai
@@ -539,12 +557,12 @@ async function migrateFromNative() {
         }
     }
 
-    // 3. Migrate proxy presets (for users without Connection Manager profiles)
+    // 3. Migrate proxy presets NOT already referenced by CM profiles
     for (const proxy of proxies) {
-        if (!proxy.url || proxy.name === 'None') continue;
+        if (!proxy.url || proxy.name === 'None' || !proxy.name) continue;
+        if (cmReferencedProxyNames.has(proxy.name)) continue; // already covered by CM
         const url = proxy.url.trim();
         if (!url) continue;
-        // Proxy presets don't carry format info — default to openai
         if (isEndpointDuplicate(url)) continue;
         addConn(makeConn(proxy.name, 'openai', url, proxy.password, ''));
     }
