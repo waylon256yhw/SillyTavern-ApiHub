@@ -10,6 +10,10 @@ import { oai_settings, chat_completion_sources, proxies } from '../../../openai.
 import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
 import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
+import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
+import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
+import { SlashCommandAbortController } from '../../../slash-commands/SlashCommandAbortController.js';
+import { SlashCommandDebugController } from '../../../slash-commands/SlashCommandDebugController.js';
 import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -67,8 +71,10 @@ function getSelectedConnection() {
 
 // ── Connection CRUD ────────────────────────────────────────────────
 
-function createConnection(name, format) {
+async function createConnection(name, format) {
     const fmt = getFormatOption(format) || FORMAT_OPTIONS[0];
+    // Capture current preset/regex state as defaults for new connection
+    const currentPresets = await readCurrentPresets();
     const conn = {
         id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: name || 'New Connection',
@@ -80,6 +86,9 @@ function createConnection(name, format) {
         excludeBody: [],          // string[] — parameter names to exclude
         includeBody: [],          // { key, value }[] — custom body params
         includeHeaders: [],       // { key, value }[] — custom headers
+        preset: currentPresets.preset,
+        regexPreset: currentPresets.regexPreset,
+        promptPostProcessing: currentPresets.promptPostProcessing,
         status: 'idle',
         statusMessage: '',
     };
@@ -182,6 +191,43 @@ function excludeKeysToYaml(keys) {
     return keys.map(k => `${k}:`).join('\n');
 }
 
+// ── Slash command helper ──────────────────────────────────────────
+
+/**
+ * Execute a ST slash command silently (same mechanism as Connection Manager).
+ * @param {string} command Command name (e.g. 'preset', 'regex-preset')
+ * @param {string} argument Command argument (empty string = read current value)
+ * @returns {Promise<string|undefined>} Command result (current value if argument is empty)
+ */
+async function runSlashCommand(command, argument) {
+    if (!SlashCommandParser.commands[command]) return undefined;
+    try {
+        const args = {
+            _scope: new SlashCommandScope(),
+            _abortController: new SlashCommandAbortController(),
+            _debugController: new SlashCommandDebugController(),
+            _parserFlags: {},
+            _hasUnnamedArgument: false,
+            quiet: 'true',
+        };
+        return await SlashCommandParser.commands[command].callback(args, argument);
+    } catch (err) {
+        console.warn(`[ApiHub] Slash command /${command} ${argument} failed:`, err);
+        return undefined;
+    }
+}
+
+/**
+ * Read current preset/regex-preset/prompt-post-processing from ST state.
+ * @returns {Promise<{preset: string, regexPreset: string, promptPostProcessing: string}>}
+ */
+async function readCurrentPresets() {
+    const preset = await runSlashCommand('preset', '') || '';
+    const regexPreset = await runSlashCommand('regex-preset', '') || '';
+    const promptPostProcessing = await runSlashCommand('prompt-post-processing', '') || '';
+    return { preset, regexPreset, promptPostProcessing };
+}
+
 // ── Core: Activate Connection → sync to oai_settings ───────────────
 
 async function activateConnection(id) {
@@ -198,7 +244,11 @@ async function activateConnection(id) {
         }
     }
 
-    // Set oai_settings fields based on format
+    // Apply preset FIRST (before connection fields) — preset may overwrite oai_settings
+    // when bind_preset_to_connection is enabled. We reapply our fields after.
+    if (conn.preset) await runSlashCommand('preset', conn.preset);
+
+    // Set oai_settings fields based on format (AFTER preset, so we override any preset-bound values)
     const { normalized } = normalizeUrl(conn.endpoint, conn.format);
 
     if (conn.format === 'openai') {
@@ -234,6 +284,15 @@ async function activateConnection(id) {
     oai_settings.custom_include_body = kvPairsToYaml(conn.includeBody);
     oai_settings.custom_exclude_body = excludeKeysToYaml(conn.excludeBody);
     oai_settings.custom_include_headers = kvPairsToYaml(conn.includeHeaders);
+
+    // Apply regex preset only when it actually changes (avoids chat reloads on every edit)
+    const currentRegex = await runSlashCommand('regex-preset', '') || '';
+    if ((conn.regexPreset || '') !== currentRegex) {
+        await runSlashCommand('regex-preset', conn.regexPreset || 'none');
+    }
+
+    // Always apply prompt post-processing (reset to default if empty)
+    await runSlashCommand('prompt-post-processing', conn.promptPostProcessing || 'none');
 
     saveSettingsDebounced();
     renderUI();
@@ -588,6 +647,11 @@ async function migrateFromNative() {
                 apiKey,
                 profile.model || '',
             );
+
+            // Carry over associated presets from CM profile
+            if (profile.preset) conn.preset = profile.preset;
+            if (profile['regex-preset']) conn.regexPreset = profile['regex-preset'];
+            if (profile['prompt-post-processing']) conn.promptPostProcessing = profile['prompt-post-processing'];
 
             addConn(conn);
         }
@@ -1032,6 +1096,11 @@ function bindEvents() {
     $('#apihub_btn_save').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
+        // Snapshot current preset/regex/post-processing state into connection
+        const currentPresets = await readCurrentPresets();
+        conn.preset = currentPresets.preset;
+        conn.regexPreset = currentPresets.regexPreset;
+        conn.promptPostProcessing = currentPresets.promptPostProcessing;
         await activateConnection(conn.id);
         toastr.success('连接配置已保存并激活');
     });
@@ -1184,10 +1253,10 @@ function bindEvents() {
 
 // ── Inline action helpers ──────────────────────────────────────────
 
-function confirmNewConnection() {
+async function confirmNewConnection() {
     const name = $('#apihub_new_input').val()?.trim();
     if (!name) return;
-    const conn = createConnection(name);
+    const conn = await createConnection(name);
     $('#apihub_new_row').hide();
     renderUI();
     $('#apihub_connection_select').val(conn.id).trigger('change');
