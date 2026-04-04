@@ -155,9 +155,9 @@
 
     <div id="apihub_params_panel" style="display:none;">
         <!-- Exclude body parameters -->
-        <div class="apihub_section">
-            <label class="apihub_label apihub_sublabel">Exclude Parameters</label>
-            <small class="apihub_hint">Checked parameters will be removed from the request body</small>
+        <div class="apihub_section apihub_card">
+            <label class="apihub_label apihub_sublabel">排除参数</label>
+            <small class="apihub_hint">勾选的参数将从请求体中移除，适用于 API 不支持某些默认参数的场景</small>
             <div id="apihub_exclude_body" class="apihub_checkbox_grid">
                 <label class="apihub_checkbox_item"><input type="checkbox" value="temperature" /><span>temperature</span></label>
                 <label class="apihub_checkbox_item"><input type="checkbox" value="top_p" /><span>top_p</span></label>
@@ -168,22 +168,22 @@
         </div>
 
         <!-- Include body parameters -->
-        <div class="apihub_section">
+        <div class="apihub_section apihub_card">
             <div class="apihub_label_row">
-                <label class="apihub_label apihub_sublabel">Additional Parameters</label>
-                <span id="apihub_btn_add_param" class="apihub_link">+ Add</span>
+                <label class="apihub_label apihub_sublabel">自定义参数</label>
+                <span id="apihub_btn_add_param" class="apihub_link">+ 添加</span>
             </div>
-            <small class="apihub_hint">Key-value pairs merged into the request body</small>
+            <small class="apihub_hint">键值对会合并到请求体中，可用于添加 API 特有的参数</small>
             <div id="apihub_include_body" class="apihub_kv_list"></div>
         </div>
 
         <!-- Include headers -->
-        <div class="apihub_section">
+        <div class="apihub_section apihub_card">
             <div class="apihub_label_row">
-                <label class="apihub_label apihub_sublabel">Custom Headers</label>
-                <span id="apihub_btn_add_header" class="apihub_link">+ Add</span>
+                <label class="apihub_label apihub_sublabel">自定义请求头</label>
+                <span id="apihub_btn_add_header" class="apihub_link">+ 添加</span>
             </div>
-            <small class="apihub_hint">Key-value pairs merged into request headers</small>
+            <small class="apihub_hint">键值对会合并到请求头中，适用于需要额外认证或路由标识的场景</small>
             <div id="apihub_include_headers" class="apihub_kv_list"></div>
         </div>
     </div>

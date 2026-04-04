@@ -267,6 +267,15 @@
     opacity: 0.6;
 }
 
+/* Card-style section for visual grouping */
+.apihub_card {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #000) 15%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 4px;
+}
+
 /* Exclude params checkbox grid */
 .apihub_checkbox_grid {
     display: flex;
