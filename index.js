@@ -420,125 +420,163 @@ function importConnections() {
 
 // ── Migration from native ST config ───────────────────────────────
 
+/** Map ST chat_completion_source values to our format */
+const SOURCE_TO_FORMAT = {
+    [chat_completion_sources.CUSTOM]: 'openai',
+    [chat_completion_sources.CLAUDE]: 'anthropic',
+    [chat_completion_sources.MAKERSUITE]: 'gemini',
+};
+
 /**
- * Detect existing native ST connection configs and migrate them into ApiHub format.
+ * Detect existing native ST connection configs and migrate them into ApiHub.
  *
- * Data sources:
- * 1. Proxy Presets (proxies array) — each has {name, url, password}, these are the user's saved connections
- * 2. Custom source config (oai_settings.custom_url/custom_model) — the OpenAI-compatible endpoint
- * 3. Active secret keys — detect which sources have API keys configured
+ * Primary data source: Connection Manager profiles (extension_settings.connectionManager.profiles).
+ * Each profile contains: api (source), api-url (endpoint), model, proxy (preset name), secret-id, etc.
  *
- * Format detection for proxy presets: we can't know the intended format from a proxy preset alone
- * (they're shared across claude/makersuite/openai etc.), so we create them as 'openai' by default
- * since most reverse proxies serve OpenAI-compatible APIs.
+ * Only migrates profiles whose api maps to our 3 supported formats (custom/claude/makersuite).
+ * Unsupported sources (openrouter, vertexai, etc.) are skipped.
  */
 async function migrateFromNative() {
     const migrated = [];
+    const existingKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}|${c.model}`));
 
-    // 1. Migrate proxy presets (the main source of user configs)
-    for (const proxy of proxies) {
-        if (!proxy.url || proxy.name === 'None') continue;
+    function isDuplicate(format, endpoint, model) {
+        return existingKeys.has(`${format}|${endpoint}|${model || ''}`);
+    }
 
-        // Dedup: check if a connection with this endpoint already exists
-        const url = proxy.url.trim();
-        const existing = getConnections().find(c => c.endpoint === url);
-        if (existing) continue;
-
-        const conn = {
+    function makeConn(name, format, endpoint, apiKey, model) {
+        return {
             id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            name: proxy.name || 'Imported Proxy',
-            format: 'openai', // default; user can change format after import
-            endpoint: url,
-            apiKey: proxy.password || '',
-            model: '',
-            availableModels: [],
+            name,
+            format,
+            endpoint,
+            apiKey: apiKey || '',
+            model: model || '',
+            availableModels: model ? [model] : [],
             excludeBody: [],
             includeBody: [],
             includeHeaders: [],
             status: 'idle',
             statusMessage: '',
         };
+    }
 
+    function addConn(conn) {
         getConnections().push(conn);
+        existingKeys.add(`${conn.format}|${conn.endpoint}|${conn.model}`);
         migrated.push(conn);
     }
 
-    // 2. Migrate custom source config (separate from proxies)
-    if (oai_settings.custom_url && oai_settings.custom_url.trim()) {
-        const url = oai_settings.custom_url.trim();
-        const existing = getConnections().find(c => c.endpoint === url);
-        if (!existing) {
-            // Try to read the custom API key
-            let apiKey = '';
-            const hasSecret = secret_state[SECRET_KEYS.CUSTOM] && Array.isArray(secret_state[SECRET_KEYS.CUSTOM]);
-            if (hasSecret) {
-                const activeSecret = secret_state[SECRET_KEYS.CUSTOM].find(s => s.active);
-                const secretId = activeSecret?.id || secret_state[SECRET_KEYS.CUSTOM][0]?.id;
-                if (secretId) {
-                    const key = await findSecret(SECRET_KEYS.CUSTOM, secretId);
-                    if (key) apiKey = key;
+    // 1. Migrate from Connection Manager profiles (primary source)
+    const cmProfiles = extension_settings?.connectionManager?.profiles;
+    if (Array.isArray(cmProfiles)) {
+        for (const profile of cmProfiles) {
+            const format = SOURCE_TO_FORMAT[profile.api];
+            if (!format) continue; // unsupported source, skip
+
+            // Resolve endpoint
+            let endpoint = (profile['api-url'] || '').trim();
+
+            // For proxy-based sources, resolve proxy preset URL if api-url is empty
+            if (!endpoint && profile.proxy && format !== 'openai') {
+                const proxyPreset = proxies.find(p => p.name === profile.proxy);
+                if (proxyPreset && proxyPreset.url) {
+                    endpoint = proxyPreset.url.trim();
                 }
             }
 
-            // Parse custom params
-            const excludeBody = parseYamlKeys(oai_settings.custom_exclude_body);
-            const includeBody = parseYamlKvPairs(oai_settings.custom_include_body);
-            const includeHeaders = parseYamlKvPairs(oai_settings.custom_include_headers);
+            // Fallback to default endpoint
+            if (!endpoint) {
+                endpoint = getFormatOption(format).defaultEndpoint;
+            }
 
-            const conn = {
-                id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                name: 'Custom API (migrated)',
-                format: 'openai',
-                endpoint: url,
+            if (isDuplicate(format, endpoint, profile.model)) continue;
+
+            // Try to read API key from secret-id
+            let apiKey = '';
+            if (profile['secret-id']) {
+                const secretKey = FORMAT_TO_SECRET[format];
+                try {
+                    const key = await findSecret(secretKey, profile['secret-id']);
+                    if (key) apiKey = key;
+                } catch { /* secret not found */ }
+            }
+
+            // Fallback: try proxy password
+            if (!apiKey && profile.proxy) {
+                const proxyPreset = proxies.find(p => p.name === profile.proxy);
+                if (proxyPreset && proxyPreset.password) {
+                    apiKey = proxyPreset.password;
+                }
+            }
+
+            const conn = makeConn(
+                profile.name || `${getFormatOption(format).label} (migrated)`,
+                format,
+                endpoint,
                 apiKey,
-                model: oai_settings.custom_model || '',
-                availableModels: oai_settings.custom_model ? [oai_settings.custom_model] : [],
-                excludeBody,
-                includeBody,
-                includeHeaders,
-                status: 'idle',
-                statusMessage: '',
-            };
+                profile.model || '',
+            );
 
-            getConnections().push(conn);
-            migrated.push(conn);
+            addConn(conn);
         }
     }
 
-    // 3. Migrate Gemini if key exists (uses default endpoint, no proxy)
-    {
-        const hasGeminiKey = secret_state[SECRET_KEYS.MAKERSUITE] && Array.isArray(secret_state[SECRET_KEYS.MAKERSUITE]);
-        if (hasGeminiKey) {
-            const fmt = getFormatOption('gemini');
-            const existing = getConnections().find(c => c.format === 'gemini');
-            if (!existing) {
-                let apiKey = '';
-                const activeSecret = secret_state[SECRET_KEYS.MAKERSUITE].find(s => s.active);
-                const secretId = activeSecret?.id || secret_state[SECRET_KEYS.MAKERSUITE][0]?.id;
-                if (secretId) {
-                    const key = await findSecret(SECRET_KEYS.MAKERSUITE, secretId);
-                    if (key) apiKey = key;
-                }
-
-                const conn = {
-                    id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                    name: 'Google Gemini (migrated)',
-                    format: 'gemini',
-                    endpoint: fmt.defaultEndpoint,
-                    apiKey,
-                    model: oai_settings.google_model || '',
-                    availableModels: oai_settings.google_model ? [oai_settings.google_model] : [],
-                    excludeBody: [],
-                    includeBody: [],
-                    includeHeaders: [],
-                    status: 'idle',
-                    statusMessage: '',
-                };
-
-                getConnections().push(conn);
-                migrated.push(conn);
-            }
+    // 2. Migrate active config if not already covered by profiles
+    const activeSource = oai_settings.chat_completion_source;
+    const activeFormat = SOURCE_TO_FORMAT[activeSource];
+    if (activeFormat) {
+        let endpoint;
+        if (activeFormat === 'openai') {
+            endpoint = (oai_settings.custom_url || '').trim();
+        } else {
+            endpoint = (oai_settings.reverse_proxy || '').trim() || getFormatOption(activeFormat).defaultEndpoint;
         }
+
+        const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
+        const activeModel = oai_settings[modelField] || '';
+
+        if (endpoint && !isDuplicate(activeFormat, endpoint, activeModel)) {
+            let apiKey = '';
+            const secretKey = FORMAT_TO_SECRET[activeFormat];
+            const secrets = secret_state[secretKey];
+            if (Array.isArray(secrets)) {
+                const s = secrets.find(s => s.active) || secrets[0];
+                if (s) {
+                    try { apiKey = await findSecret(secretKey, s.id); } catch {}
+                }
+            }
+            if (!apiKey && activeFormat !== 'openai' && oai_settings.proxy_password) {
+                apiKey = oai_settings.proxy_password;
+            }
+
+            const conn = makeConn(
+                `${getFormatOption(activeFormat).label} (active)`,
+                activeFormat,
+                endpoint,
+                apiKey,
+                activeModel,
+            );
+
+            // Migrate custom params for openai
+            if (activeFormat === 'openai') {
+                conn.excludeBody = parseYamlKeys(oai_settings.custom_exclude_body);
+                conn.includeBody = parseYamlKvPairs(oai_settings.custom_include_body);
+                conn.includeHeaders = parseYamlKvPairs(oai_settings.custom_include_headers);
+            }
+
+            addConn(conn);
+        }
+    }
+
+    // 3. Migrate proxy presets (for users without Connection Manager profiles)
+    for (const proxy of proxies) {
+        if (!proxy.url || proxy.name === 'None') continue;
+        const url = proxy.url.trim();
+        if (!url) continue;
+        // Proxy presets don't carry format info — default to openai
+        if (isDuplicate('openai', url, '')) continue;
+        addConn(makeConn(proxy.name, 'openai', url, proxy.password, ''));
     }
 
     if (migrated.length > 0) {
@@ -756,35 +794,15 @@ function escapeHtml(str) {
 // ── Hide native UI elements ────────────────────────────────────────
 
 function hideNativeUI() {
-    // Hide the native "Chat Completion Source" label and dropdown
-    const sourceSelect = $('#chat_completion_source');
-    sourceSelect.prevAll('h4').first().hide();
-    sourceSelect.hide();
+    // Hide ALL native children of #openai_api except our container and prompt post-processing
+    $('#openai_api').children().not('#apihub_container, #prompt_post_processing_form').hide();
 
-    // Hide native API connection forms for the three sources we manage.
-    const formsToHide = '#claude_form, #makersuite_form, #custom_form';
-
-    // Hide the entire Reverse Proxy drawer (contains Proxy Presets, URL, password)
-    const reverseProxyDrawer = '#openai_reverse_proxy';
-    // Also hide the warning message
-    const reverseProxyWarnings = '#ReverseProxyWarningMessage, #ReverseProxyWarningMessage2';
-
-    // Hide custom source URL and model inputs
-    const customInputs = '#custom_api_url_text, #custom_model_id';
-
-    // Hide native "Additional Parameters" button
-    const additionalParams = '#customize_additional_parameters';
-
-    // Apply initial hide
-    const allSelectors = `${formsToHide}, ${reverseProxyWarnings}, ${customInputs}, ${additionalParams}`;
-    $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
-    // Hide the reverse proxy inline-drawer (parent of the proxy presets)
-    $(reverseProxyDrawer).closest('.inline-drawer').hide();
+    // Hide the Connection Manager (Connection Profile) UI at top of #rm_api_block
+    $('#connection_profiles').closest('.wide100p').hide();
 
     // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
     $(document).on('change', '#chat_completion_source', () => {
-        $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
-        $(reverseProxyDrawer).closest('.inline-drawer').hide();
+        $('#openai_api').children().not('#apihub_container, #prompt_post_processing_form').hide();
     });
 }
 
