@@ -239,6 +239,25 @@ async function activateConnection(id) {
     renderUI();
 }
 
+/**
+ * Sync the current connection's model to ST native settings and selects.
+ * Called on model change/add/delete so Test Message works immediately.
+ */
+function syncModelToNative(conn) {
+    if (!conn) return;
+    if (conn.format === 'openai') {
+        oai_settings.custom_model = conn.model;
+        $('#custom_model_id').val(conn.model);
+    } else if (conn.format === 'anthropic') {
+        oai_settings.claude_model = conn.model;
+        $('#model_claude_select').val(conn.model);
+    } else if (conn.format === 'gemini') {
+        oai_settings.google_model = conn.model;
+        $('#model_google_select').val(conn.model);
+    }
+    saveSettingsDebounced();
+}
+
 // ── Model fetching ─────────────────────────────────────────────────
 
 async function fetchModels() {
@@ -876,8 +895,8 @@ function bindEvents() {
         await activateConnection(conn.id);
     });
 
-    // Format change
-    $('#apihub_format_select').on('change', function () {
+    // Format change → activate immediately
+    $('#apihub_format_select').on('change', async function () {
         const conn = getSelectedConnection();
         if (!conn) return;
         const format = $(this).val();
@@ -888,21 +907,29 @@ function bindEvents() {
         });
         renderConnectionDetails();
         renderUrlPreview();
+        await activateConnection(conn.id);
     });
 
-    // Endpoint input → live preview
+    // Endpoint input → live preview + debounced activate
+    let endpointActivateTimer = null;
     $('#apihub_endpoint').on('input', function () {
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { endpoint: $(this).val() });
         renderUrlPreview();
+        // Debounce activation to avoid thrashing on every keystroke
+        clearTimeout(endpointActivateTimer);
+        endpointActivateTimer = setTimeout(() => activateConnection(conn.id), 600);
     });
 
-    // API key input
+    // API key input → debounced activate
+    let keyActivateTimer = null;
     $('#apihub_apikey').on('input', function () {
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { apiKey: $(this).val() });
+        clearTimeout(keyActivateTimer);
+        keyActivateTimer = setTimeout(() => activateConnection(conn.id), 600);
     });
 
     // Toggle key visibility
@@ -918,11 +945,12 @@ function bindEvents() {
         }
     });
 
-    // Model change
-    $('#apihub_model_select').on('change', function () {
+    // Model change → activate immediately
+    $('#apihub_model_select').on('change', async function () {
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { model: $(this).val() });
+        syncModelToNative(conn);
         renderUrlPreview();
     });
 
@@ -1007,6 +1035,7 @@ function bindEvents() {
         conn.availableModels = conn.availableModels.filter(m => m !== selected);
         const newModel = conn.availableModels[0] || '';
         updateConnection(conn.id, { model: newModel });
+        syncModelToNative(conn);
         renderModelList(conn);
         renderUrlPreview();
     });
@@ -1146,6 +1175,7 @@ function confirmAddModel() {
         conn.availableModels.push(modelName);
     }
     updateConnection(conn.id, { model: modelName });
+    syncModelToNative(conn);
     $('#apihub_add_model_row').hide();
     renderModelList(conn);
     renderUrlPreview();
