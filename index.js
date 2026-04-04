@@ -6,7 +6,7 @@
  */
 
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { oai_settings, chat_completion_sources, model_list } from '../../../openai.js';
+import { oai_settings, chat_completion_sources, model_list, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
 import { eventSource, event_types } from '../../../../script.js';
 import { SECRET_KEYS, writeSecret, findSecret, secret_state } from '../../../secrets.js';
@@ -422,118 +422,123 @@ function importConnections() {
 
 /**
  * Detect existing native ST connection configs and migrate them into ApiHub format.
- * Only migrates: custom (→ openai), claude (→ anthropic), makersuite (→ gemini).
- * Skips sources with no endpoint configured or already-migrated duplicates.
+ *
+ * Data sources:
+ * 1. Proxy Presets (proxies array) — each has {name, url, password}, these are the user's saved connections
+ * 2. Custom source config (oai_settings.custom_url/custom_model) — the OpenAI-compatible endpoint
+ * 3. Active secret keys — detect which sources have API keys configured
+ *
+ * Format detection for proxy presets: we can't know the intended format from a proxy preset alone
+ * (they're shared across claude/makersuite/openai etc.), so we create them as 'openai' by default
+ * since most reverse proxies serve OpenAI-compatible APIs.
  */
 async function migrateFromNative() {
     const migrated = [];
 
-    // Define what we can migrate
-    const sources = [
-        {
-            format: 'openai',
-            name: null, // will be auto-generated
-            endpoint: oai_settings.custom_url,
-            model: oai_settings.custom_model,
-            secretKey: SECRET_KEYS.CUSTOM,
-            includeBody: oai_settings.custom_include_body,
-            excludeBody: oai_settings.custom_exclude_body,
-            includeHeaders: oai_settings.custom_include_headers,
-        },
-        {
-            format: 'anthropic',
-            name: null,
-            endpoint: oai_settings.reverse_proxy,
-            model: oai_settings.claude_model,
-            secretKey: SECRET_KEYS.CLAUDE,
-            // reverse_proxy is shared; only migrate if claude source was active or has a key
-            condition: () => oai_settings.chat_completion_source === chat_completion_sources.CLAUDE
-                || (secret_state[SECRET_KEYS.CLAUDE] && oai_settings.claude_model),
-        },
-        {
-            format: 'gemini',
-            name: null,
-            endpoint: oai_settings.reverse_proxy || '', // gemini may use reverse_proxy for custom endpoints
-            model: oai_settings.google_model,
-            secretKey: SECRET_KEYS.MAKERSUITE,
-            // Only migrate if user has a makersuite key or is currently using it
-            condition: () => secret_state[SECRET_KEYS.MAKERSUITE]
-                || oai_settings.chat_completion_source === chat_completion_sources.MAKERSUITE,
-        },
-    ];
+    // 1. Migrate proxy presets (the main source of user configs)
+    for (const proxy of proxies) {
+        if (!proxy.url || proxy.name === 'None') continue;
 
-    for (const src of sources) {
-        // Check condition if defined
-        if (src.condition && !src.condition()) continue;
-
-        // Must have at least an endpoint or a secret key configured
-        const hasEndpoint = src.endpoint && src.endpoint.trim();
-        const hasSecret = secret_state[src.secretKey] && Array.isArray(secret_state[src.secretKey]);
-        if (!hasEndpoint && !hasSecret) continue;
-
-        // Resolve the actual endpoint (with default fallback)
-        const endpoint = (src.endpoint || '').trim();
-        const fmt = getFormatOption(src.format);
-        const resolvedEndpoint = endpoint || fmt.defaultEndpoint;
-
-        // Check for duplicate: same format + same resolved endpoint already exists
-        const existing = getConnections().find(c =>
-            c.format === src.format && (c.endpoint || fmt.defaultEndpoint) === resolvedEndpoint,
-        );
+        // Dedup: check if a connection with this endpoint already exists
+        const url = proxy.url.trim();
+        const existing = getConnections().find(c => c.endpoint === url);
         if (existing) continue;
-
-        // Try to read the API key
-        let apiKey = '';
-        if (hasSecret) {
-            const activeSecret = secret_state[src.secretKey].find(s => s.active);
-            const secretId = activeSecret?.id || secret_state[src.secretKey][0]?.id;
-            if (secretId) {
-                const key = await findSecret(src.secretKey, secretId);
-                if (key) apiKey = key;
-            }
-        }
-
-        // Also check proxy_password as fallback for claude/gemini
-        if (!apiKey && (src.format === 'anthropic' || src.format === 'gemini')) {
-            if (oai_settings.proxy_password) {
-                apiKey = oai_settings.proxy_password;
-            }
-        }
-
-        // Parse custom include/exclude if available (from custom source)
-        let excludeBody = [];
-        let includeBody = [];
-        let includeHeaders = [];
-
-        if (src.excludeBody) {
-            excludeBody = parseYamlKeys(src.excludeBody);
-        }
-        if (src.includeBody) {
-            includeBody = parseYamlKvPairs(src.includeBody);
-        }
-        if (src.includeHeaders) {
-            includeHeaders = parseYamlKvPairs(src.includeHeaders);
-        }
-
-        const connName = src.name || `${fmt.label} (migrated)`;
 
         const conn = {
             id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            name: connName,
-            format: src.format,
-            endpoint: resolvedEndpoint,
-            apiKey,
-            model: src.model || '',
-            availableModels: src.model ? [src.model] : [],
-            excludeBody,
-            includeBody,
-            includeHeaders,
+            name: proxy.name || 'Imported Proxy',
+            format: 'openai', // default; user can change format after import
+            endpoint: url,
+            apiKey: proxy.password || '',
+            model: '',
+            availableModels: [],
+            excludeBody: [],
+            includeBody: [],
+            includeHeaders: [],
             status: 'idle',
             statusMessage: '',
         };
 
         getConnections().push(conn);
         migrated.push(conn);
+    }
+
+    // 2. Migrate custom source config (separate from proxies)
+    if (oai_settings.custom_url && oai_settings.custom_url.trim()) {
+        const url = oai_settings.custom_url.trim();
+        const existing = getConnections().find(c => c.endpoint === url);
+        if (!existing) {
+            // Try to read the custom API key
+            let apiKey = '';
+            const hasSecret = secret_state[SECRET_KEYS.CUSTOM] && Array.isArray(secret_state[SECRET_KEYS.CUSTOM]);
+            if (hasSecret) {
+                const activeSecret = secret_state[SECRET_KEYS.CUSTOM].find(s => s.active);
+                const secretId = activeSecret?.id || secret_state[SECRET_KEYS.CUSTOM][0]?.id;
+                if (secretId) {
+                    const key = await findSecret(SECRET_KEYS.CUSTOM, secretId);
+                    if (key) apiKey = key;
+                }
+            }
+
+            // Parse custom params
+            const excludeBody = parseYamlKeys(oai_settings.custom_exclude_body);
+            const includeBody = parseYamlKvPairs(oai_settings.custom_include_body);
+            const includeHeaders = parseYamlKvPairs(oai_settings.custom_include_headers);
+
+            const conn = {
+                id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                name: 'Custom API (migrated)',
+                format: 'openai',
+                endpoint: url,
+                apiKey,
+                model: oai_settings.custom_model || '',
+                availableModels: oai_settings.custom_model ? [oai_settings.custom_model] : [],
+                excludeBody,
+                includeBody,
+                includeHeaders,
+                status: 'idle',
+                statusMessage: '',
+            };
+
+            getConnections().push(conn);
+            migrated.push(conn);
+        }
+    }
+
+    // 3. Migrate Gemini if key exists (uses default endpoint, no proxy)
+    {
+        const hasGeminiKey = secret_state[SECRET_KEYS.MAKERSUITE] && Array.isArray(secret_state[SECRET_KEYS.MAKERSUITE]);
+        if (hasGeminiKey) {
+            const fmt = getFormatOption('gemini');
+            const existing = getConnections().find(c => c.format === 'gemini');
+            if (!existing) {
+                let apiKey = '';
+                const activeSecret = secret_state[SECRET_KEYS.MAKERSUITE].find(s => s.active);
+                const secretId = activeSecret?.id || secret_state[SECRET_KEYS.MAKERSUITE][0]?.id;
+                if (secretId) {
+                    const key = await findSecret(SECRET_KEYS.MAKERSUITE, secretId);
+                    if (key) apiKey = key;
+                }
+
+                const conn = {
+                    id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    name: 'Google Gemini (migrated)',
+                    format: 'gemini',
+                    endpoint: fmt.defaultEndpoint,
+                    apiKey,
+                    model: oai_settings.google_model || '',
+                    availableModels: oai_settings.google_model ? [oai_settings.google_model] : [],
+                    excludeBody: [],
+                    includeBody: [],
+                    includeHeaders: [],
+                    status: 'idle',
+                    statusMessage: '',
+                };
+
+                getConnections().push(conn);
+                migrated.push(conn);
+            }
+        }
     }
 
     if (migrated.length > 0) {
@@ -757,12 +762,12 @@ function hideNativeUI() {
     sourceSelect.hide();
 
     // Hide native API connection forms for the three sources we manage.
-    // These have data-source attributes and are toggled by toggleChatCompletionForms(),
-    // so we need to re-hide them each time the source changes.
     const formsToHide = '#claude_form, #makersuite_form, #custom_form';
 
-    // Hide the reverse proxy section (used by claude/makersuite)
-    const reverseProxySection = '#openai_reverse_proxy, #openai_reverse_proxy_name, #ReverseProxyWarningMessage, #ReverseProxyWarningMessage2';
+    // Hide the entire Reverse Proxy drawer (contains Proxy Presets, URL, password)
+    const reverseProxyDrawer = '#openai_reverse_proxy';
+    // Also hide the warning message
+    const reverseProxyWarnings = '#ReverseProxyWarningMessage, #ReverseProxyWarningMessage2';
 
     // Hide custom source URL and model inputs
     const customInputs = '#custom_api_url_text, #custom_model_id';
@@ -771,12 +776,15 @@ function hideNativeUI() {
     const additionalParams = '#customize_additional_parameters';
 
     // Apply initial hide
-    const allSelectors = `${formsToHide}, ${reverseProxySection}, ${customInputs}, ${additionalParams}`;
+    const allSelectors = `${formsToHide}, ${reverseProxyWarnings}, ${customInputs}, ${additionalParams}`;
     $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
+    // Hide the reverse proxy inline-drawer (parent of the proxy presets)
+    $(reverseProxyDrawer).closest('.inline-drawer').hide();
 
     // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
     $(document).on('change', '#chat_completion_source', () => {
         $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
+        $(reverseProxyDrawer).closest('.inline-drawer').hide();
     });
 }
 
