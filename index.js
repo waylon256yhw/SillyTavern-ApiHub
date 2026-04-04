@@ -259,7 +259,9 @@ async function activateConnection(id) {
         oai_settings.proxy_password = conn.apiKey;
         oai_settings.claude_model = conn.model;
     } else if (conn.format === 'gemini') {
-        oai_settings.reverse_proxy = normalized;
+        // Don't use normalizeUrl for gemini reverse_proxy — ST's makersuite backend
+        // adds its own /{apiVersion}/ path, so we must pass the raw base URL
+        oai_settings.reverse_proxy = conn.endpoint.replace(/\/+$/, '');
         oai_settings.proxy_password = conn.apiKey;
         oai_settings.google_model = conn.model;
     }
