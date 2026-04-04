@@ -874,6 +874,8 @@ function applyNativeUIVisibility() {
     } else {
         // Show ApiHub, hide native
         $('#apihub_container').children().show();
+        // Re-hide inline rows that should only show on button click
+        $('#apihub_rename_row, #apihub_new_row, #apihub_add_model_row').hide();
         sourceSelect.prevAll('h4').first().hide();
         sourceSelect.hide();
         $('#openai_reverse_proxy').closest('.inline-drawer').hide();
@@ -907,14 +909,11 @@ function bindEvents() {
     $('#apihub_btn_toggle_native').on('click', () => {
         nativeUIVisible = !nativeUIVisible;
         applyNativeUIVisibility();
-        const icon = $('#apihub_btn_toggle_native i');
-        const text = $('#apihub_btn_toggle_native');
+        const btn = $('#apihub_btn_toggle_native');
         if (nativeUIVisible) {
-            icon.removeClass('fa-eye').addClass('fa-eye-slash');
-            text.html('<i class="fa-solid fa-eye-slash"></i> API Hub');
+            btn.addClass('active').html('<i class="fa-solid fa-arrows-rotate"></i> API Hub');
         } else {
-            icon.removeClass('fa-eye-slash').addClass('fa-eye');
-            text.html('<i class="fa-solid fa-eye"></i> Native UI');
+            btn.removeClass('active').html('<i class="fa-solid fa-arrows-rotate"></i> Native UI');
         }
     });
 

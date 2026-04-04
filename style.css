@@ -29,6 +29,31 @@
     opacity: 0.5;
 }
 
+/* Toggle native/ApiHub button */
+.apihub_toggle_btn {
+    font-size: calc(var(--mainFontSize) * 0.75);
+    padding: 3px 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 12px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.6;
+    cursor: pointer;
+    user-select: none;
+    transition: opacity 0.15s, background 0.15s;
+}
+
+.apihub_toggle_btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--SmartThemeEmColor, #5588cc) 15%, transparent);
+}
+
+.apihub_toggle_btn.active {
+    opacity: 1;
+    background: color-mix(in srgb, var(--SmartThemeEmColor, #5588cc) 20%, transparent);
+    border-color: var(--SmartThemeEmColor, #5588cc);
+    color: var(--SmartThemeEmColor, #5588cc);
+}
+
 .apihub_section {
     display: flex;
     flex-direction: column;
