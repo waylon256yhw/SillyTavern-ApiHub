@@ -238,53 +238,6 @@
     border-color: #f87171;
 }
 
-/* Status indicator */
-.apihub_status_row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.apihub_dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    background: var(--SmartThemeQuoteColor, #888);
-    opacity: 0.4;
-}
-
-.apihub_dot.connected {
-    background: #4ade80;
-    opacity: 1;
-}
-
-.apihub_dot.error {
-    background: #f87171;
-    opacity: 1;
-}
-
-.apihub_dot.testing {
-    background: var(--SmartThemeEmColor, #5588cc);
-    opacity: 1;
-    animation: apihub_pulse 1s ease-in-out infinite;
-}
-
-@keyframes apihub_pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
-}
-
-.apihub_status_text {
-    font-size: calc(var(--mainFontSize) * 0.8);
-    color: var(--SmartThemeBodyColor);
-    opacity: 0.7;
-}
-
-.apihub_status_text.connected { color: #4ade80; }
-.apihub_status_text.error { color: #f87171; }
-.apihub_status_text.testing { color: var(--SmartThemeEmColor, #5588cc); }
-
 /* Flex utility */
 .flex1 { flex: 1; min-width: 0; }
 

@@ -124,11 +124,6 @@ function createPresetConnection(name, format) {
 function updateConnection(id, partial) {
     const conn = getConnection(id);
     if (!conn) return;
-    // Reset status when core fields change
-    if ('endpoint' in partial || 'apiKey' in partial || 'model' in partial || 'format' in partial) {
-        partial.status = 'idle';
-        partial.statusMessage = '';
-    }
     Object.assign(conn, partial);
     saveSettingsDebounced();
 }
@@ -326,9 +321,6 @@ async function fetchModels() {
     const conn = getSelectedConnection();
     if (!conn) return;
 
-    updateConnection(conn.id, { status: 'testing', statusMessage: 'Fetching models...' });
-    renderStatus(conn);
-
     try {
         // Official endpoints use native ST flow; all others use CUSTOM source GET /v1/models
         const officialHosts = {
@@ -375,21 +367,20 @@ async function fetchModels() {
             if (models.length > 0) {
                 updateConnection(conn.id, {
                     availableModels: [...new Set(models)],
-                    status: 'connected',
-                    statusMessage: `${models.length} models found`,
                 });
                 if (!models.includes(conn.model)) {
                     updateConnection(conn.id, { model: models[0] });
                 }
+                toastr.success(`拉取到 ${models.length} 个模型`);
             } else {
-                updateConnection(conn.id, { status: 'error', statusMessage: 'No models returned' });
+                toastr.warning('未拉取到模型');
             }
         } else {
             const errText = await response.text().catch(() => '');
-            updateConnection(conn.id, { status: 'error', statusMessage: `Fetch failed: ${response.status} ${errText.slice(0, 100)}` });
+            toastr.error(`拉取失败: ${response.status} ${errText.slice(0, 100)}`);
         }
     } catch (err) {
-        updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Fetch failed' });
+        toastr.error(err.message || '拉取失败');
     }
 
     renderUI();
@@ -429,14 +420,13 @@ async function fetchModelsViaNativeConnect(conn) {
     if (googleModels.length > 0) {
         updateConnection(conn.id, {
             availableModels: [...new Set(googleModels)],
-            status: 'connected',
-            statusMessage: `${googleModels.length} models found`,
         });
         if (!googleModels.includes(conn.model)) {
             updateConnection(conn.id, { model: googleModels[0] });
         }
+        toastr.success(`拉取到 ${googleModels.length} 个模型`);
     } else {
-        updateConnection(conn.id, { status: 'error', statusMessage: 'No models returned' });
+        toastr.warning('未拉取到模型');
     }
 
     renderUI();
@@ -775,9 +765,6 @@ function renderConnectionDetails() {
 
     // Active badge — always show since switch = activate
     $('#apihub_active_badge').toggle(conn.id === activeId);
-
-    // Status
-    renderStatus(conn);
 }
 
 function renderModelList(conn) {
@@ -829,22 +816,6 @@ function renderUrlPreview() {
     }
 
     $('#apihub_url_preview').show();
-}
-
-function renderStatus(conn) {
-    conn = conn || getSelectedConnection();
-    if (!conn || conn.status === 'idle') {
-        $('#apihub_status_section').hide();
-        return;
-    }
-
-    const dot = $('#apihub_status_dot');
-    const text = $('#apihub_status_text');
-
-    dot.removeClass('connected error testing').addClass(conn.status);
-    text.removeClass('connected error testing').addClass(conn.status);
-    text.text(conn.statusMessage || conn.status);
-    $('#apihub_status_section').show();
 }
 
 // ── Custom Parameters Rendering ───────────────────────────────────
