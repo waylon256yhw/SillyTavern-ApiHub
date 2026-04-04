@@ -317,9 +317,18 @@ function syncModelToNative(conn) {
 
 // ── Model fetching ─────────────────────────────────────────────────
 
+let fetchAbortController = null;
+
 async function fetchModels() {
     const conn = getSelectedConnection();
     if (!conn) return;
+
+    // Cancel any in-flight fetch
+    if (fetchAbortController) {
+        fetchAbortController.abort();
+    }
+    fetchAbortController = new AbortController();
+    const { signal } = fetchAbortController;
 
     // Show loading state on fetch button
     const fetchBtn = $('#apihub_btn_fetch_models');
@@ -360,6 +369,7 @@ async function fetchModels() {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify(body),
+            signal,
         });
 
         if (response.ok) {
@@ -385,10 +395,11 @@ async function fetchModels() {
             toastr.error(`拉取失败: ${response.status} ${errText.slice(0, 100)}`);
         }
     } catch (err) {
+        if (err.name === 'AbortError') return; // cancelled by new fetch
         toastr.error(err.message || '拉取失败');
     }
 
-    // Restore fetch button
+    fetchAbortController = null;
     fetchBtn.html(originalHtml).css('pointer-events', '');
     renderUI();
 }
