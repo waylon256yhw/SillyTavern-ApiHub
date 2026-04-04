@@ -12,15 +12,18 @@
 /* Branding */
 .apihub_branding {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 6px;
-    padding-bottom: 4px;
+    padding: 6px 0;
 }
 
 .apihub_brand_name {
-    font-size: calc(var(--mainFontSize) * 1.1);
-    font-weight: 700;
-    color: var(--SmartThemeEmColor, #5588cc);
+    font-size: calc(var(--mainFontSize) * 1.15);
+    font-weight: 800;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 
 .apihub_brand_ver {
@@ -31,15 +34,16 @@
 
 /* Toggle native/ApiHub button */
 .apihub_toggle_btn {
-    font-size: calc(var(--mainFontSize) * 0.75);
-    padding: 3px 10px;
+    font-size: calc(var(--mainFontSize) * 0.78);
+    padding: 4px 12px;
     border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 12px;
+    border-radius: 14px;
     color: var(--SmartThemeBodyColor);
-    opacity: 0.6;
+    opacity: 0.65;
     cursor: pointer;
     user-select: none;
-    transition: opacity 0.15s, background 0.15s;
+    transition: all 0.2s;
+    white-space: nowrap;
 }
 
 .apihub_toggle_btn:hover {
@@ -49,9 +53,9 @@
 
 .apihub_toggle_btn.active {
     opacity: 1;
-    background: color-mix(in srgb, var(--SmartThemeEmColor, #5588cc) 20%, transparent);
-    border-color: var(--SmartThemeEmColor, #5588cc);
-    color: var(--SmartThemeEmColor, #5588cc);
+    background: linear-gradient(135deg, color-mix(in srgb, #60a5fa 20%, transparent), color-mix(in srgb, #a78bfa 20%, transparent));
+    border-color: #a78bfa;
+    color: #e0d4ff;
 }
 
 .apihub_section {
@@ -216,21 +220,22 @@
 
 /* Reset danger button */
 .apihub_reset_btn {
-    font-size: calc(var(--mainFontSize) * 0.75);
+    font-size: calc(var(--mainFontSize) * 0.8);
+    font-weight: 600;
     color: #f87171;
-    opacity: 0.5;
     cursor: pointer;
     user-select: none;
     text-align: center;
-    padding: 4px;
-    border: 1px dashed #f8717144;
-    border-radius: 4px;
-    transition: opacity 0.15s;
+    padding: 8px 16px;
+    border: 1px solid #f8717166;
+    border-radius: 6px;
+    background: color-mix(in srgb, #f87171 8%, transparent);
+    transition: all 0.15s;
 }
 
 .apihub_reset_btn:hover {
-    opacity: 1;
-    background: color-mix(in srgb, #f87171 10%, transparent);
+    background: color-mix(in srgb, #f87171 20%, transparent);
+    border-color: #f87171;
 }
 
 /* Status indicator */
@@ -317,26 +322,31 @@
     margin-top: 4px;
 }
 
-/* Exclude params checkbox grid */
-.apihub_checkbox_grid {
+/* Exclude params checkbox list (vertical) */
+.apihub_checkbox_list {
     display: flex;
-    flex-wrap: wrap;
-    gap: 2px 12px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 0;
 }
 
 .apihub_checkbox_item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: calc(var(--mainFontSize) * 0.8);
+    gap: 8px;
+    font-size: calc(var(--mainFontSize) * 0.85);
     font-family: var(--monoFontFamily, 'Courier New', monospace);
     color: var(--SmartThemeBodyColor);
     opacity: 0.75;
     cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+    transition: background 0.1s;
 }
 
 .apihub_checkbox_item:hover {
     opacity: 1;
+    background: color-mix(in srgb, var(--SmartThemeBorderColor) 40%, transparent);
 }
 
 .apihub_checkbox_item input[type="checkbox"] {
