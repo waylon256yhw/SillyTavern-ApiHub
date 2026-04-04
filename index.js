@@ -513,7 +513,7 @@ async function migrateFromNative() {
         const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
         const activeModel = oai_settings[modelField] || '';
 
-        if (endpoint && !isCmDuplicate(activeFormat, endpoint, activeModel)) {
+        if (endpoint && !isEndpointDuplicate(endpoint)) {
             // Get API key from proxy_password (can't use findSecret without allowKeysExposure)
             let apiKey = '';
             if (activeFormat !== 'openai' && oai_settings.proxy_password) {
