@@ -105,7 +105,7 @@
 
 .apihub_preview_row {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 6px;
     font-family: var(--monoFontFamily, 'Courier New', monospace);
     font-size: calc(var(--mainFontSize) * 0.78);
@@ -128,9 +128,7 @@
 .apihub_preview_url {
     color: var(--SmartThemeBodyColor);
     opacity: 0.8;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-break: break-all;
     min-width: 0;
 }
 

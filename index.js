@@ -9,10 +9,9 @@ import { extension_settings, renderExtensionTemplateAsync } from '../../../exten
 import { oai_settings, chat_completion_sources, model_list } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
 import { eventSource, event_types } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
-import { uuidv4 } from '../../../utils.js';
+import { SECRET_KEYS, writeSecret, findSecret, secret_state } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
-import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, maskApiKey } from './url-utils.js';
+import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -21,7 +20,6 @@ const MODULE_NAME = 'third-party/SillyTavern-ApiHub';
 const DEFAULT_SETTINGS = {
     connections: [],
     activeConnectionId: null,
-    keyVault: [], // { id, name, key }
 };
 
 /** Maps our format names to ST's chat_completion_source values */
@@ -300,99 +298,60 @@ async function testConnection() {
     $('#test_api_button').trigger('click');
 }
 
-// ── Key Vault ──────────────────────────────────────────────────────
+// ── Native Secret Integration ─────────────────────────────────────
 
-function getKeyVault() {
-    return getSettings().keyVault;
+/**
+ * Open ST's native key manager dialog for the current connection's format.
+ * Uses the document-level '.manage-api-keys' click handler in secrets.js.
+ */
+function openNativeKeyManager(format) {
+    const secretKey = FORMAT_TO_SECRET[format];
+    if (!secretKey) return;
+    // Create a temp element to trigger ST's native handler
+    const btn = $(`<div class="manage-api-keys" data-key="${secretKey}" style="display:none;"></div>`);
+    $('body').append(btn);
+    btn.trigger('click');
+    btn.remove();
 }
 
-async function showKeyVaultPopup() {
-    const vault = getKeyVault();
+/**
+ * Render chips for existing ST secrets that match the current connection's format.
+ * Clicking a chip fills the API key input with the secret's actual value.
+ */
+async function renderSecretChips() {
+    const conn = getSelectedConnection();
+    const container = $('#apihub_secret_chips');
+    container.empty();
 
-    let html = '<div class="apihub_vault_popup">';
-    html += '<h4>Key Vault</h4>';
-    html += '<p style="font-size:0.8em;opacity:0.6;">Keys are stored locally in SillyTavern settings.</p>';
-
-    // Existing keys
-    if (vault.length > 0) {
-        html += '<div style="margin:8px 0;display:flex;flex-direction:column;gap:4px;">';
-        for (const entry of vault) {
-            html += `<div class="apihub_vault_entry" style="display:flex;align-items:center;gap:6px;">
-                <span style="flex:1;font-size:0.9em;">${entry.name}</span>
-                <span style="font-size:0.75em;opacity:0.5;font-family:monospace;">${maskApiKey(entry.key)}</span>
-                <span class="apihub_vault_delete menu_button menu_button_icon" data-vault-id="${entry.id}" title="Delete">
-                    <i class="fa-solid fa-trash-can"></i>
-                </span>
-            </div>`;
-        }
-        html += '</div>';
-    }
-
-    // Add new
-    html += `<div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;border-top:1px solid var(--SmartThemeBorderColor);padding-top:8px;">
-        <input id="apihub_vault_new_name" type="text" class="text_pole" placeholder="Key name (e.g. OpenRouter)" />
-        <div style="display:flex;gap:4px;">
-            <input id="apihub_vault_new_key" type="password" class="text_pole" style="flex:1;font-family:monospace;" placeholder="sk-..." />
-            <div id="apihub_vault_add_btn" class="menu_button">Save</div>
-        </div>
-    </div>`;
-    html += '</div>';
-
-    const dlg = $(html);
-
-    // Wire delete buttons (event delegation for dynamically added entries)
-    dlg.on('click', '.apihub_vault_delete', function () {
-        const vid = $(this).data('vault-id');
-        const idx = vault.findIndex(v => v.id === vid);
-        if (idx !== -1) {
-            vault.splice(idx, 1);
-            saveSettingsDebounced();
-            $(this).closest('.apihub_vault_entry').remove();
-            renderVaultChips();
-        }
-    });
-
-    // Wire add button
-    dlg.find('#apihub_vault_add_btn').on('click', () => {
-        const name = dlg.find('#apihub_vault_new_name').val()?.trim();
-        const key = dlg.find('#apihub_vault_new_key').val()?.trim();
-        if (!name || !key) return;
-        vault.push({ id: uuidv4(), name, key });
-        saveSettingsDebounced();
-        renderVaultChips();
-        // Re-render the entries list and clear inputs
-        dlg.find('#apihub_vault_new_name').val('');
-        dlg.find('#apihub_vault_new_key').val('');
-        // Add the new entry to the visible list
-        const entryHtml = `<div class="apihub_vault_entry" style="display:flex;align-items:center;gap:6px;">
-            <span style="flex:1;font-size:0.9em;">${name}</span>
-            <span style="font-size:0.75em;opacity:0.5;font-family:monospace;">${maskApiKey(key)}</span>
-            <span class="apihub_vault_delete menu_button menu_button_icon" data-vault-id="${vault[vault.length - 1].id}" title="Delete">
-                <i class="fa-solid fa-trash-can"></i>
-            </span>
-        </div>`;
-        dlg.find('.apihub_vault_popup > div').first().append(entryHtml);
-        toastr.success(`Key "${name}" saved to vault`);
-    });
-
-    await callGenericPopup(dlg, POPUP_TYPE.TEXT, '', { wide: false, large: false });
-    renderVaultChips();
-}
-
-function renderVaultChips() {
-    const vault = getKeyVault();
-    const container = $('#apihub_vault_chips');
-    if (vault.length === 0) {
+    if (!conn) {
         container.hide();
         return;
     }
-    container.empty().show();
-    const hint = $('<span class="apihub_hint" style="margin-right:4px;">Fill from vault:</span>');
+
+    const secretKey = FORMAT_TO_SECRET[conn.format];
+    const secrets = secret_state[secretKey];
+
+    if (!Array.isArray(secrets) || secrets.length === 0) {
+        container.hide();
+        return;
+    }
+
+    container.show();
+    const hint = $('<span class="apihub_hint" style="margin-right:4px;">已有密钥：</span>');
     container.append(hint);
-    for (const entry of vault) {
-        const chip = $(`<span class="apihub_chip" data-vault-id="${entry.id}">${entry.name}</span>`);
-        chip.on('click', () => {
-            $('#apihub_apikey').val(entry.key).trigger('input');
+
+    for (const entry of secrets) {
+        const label = entry.label || entry.value || entry.id.slice(0, 8);
+        const activeMark = entry.active ? ' *' : '';
+        const chip = $(`<span class="apihub_chip" data-secret-id="${entry.id}">${label}${activeMark}</span>`);
+        chip.on('click', async () => {
+            const value = await findSecret(secretKey, entry.id);
+            if (value) {
+                $('#apihub_apikey').val(value).trigger('input');
+                toastr.success(`已填入密钥: ${label}`);
+            } else {
+                toastr.error('无法读取密钥');
+            }
         });
         container.append(chip);
     }
@@ -459,13 +418,168 @@ function importConnections() {
     input.click();
 }
 
+// ── Migration from native ST config ───────────────────────────────
+
+/**
+ * Detect existing native ST connection configs and migrate them into ApiHub format.
+ * Only migrates: custom (→ openai), claude (→ anthropic), makersuite (→ gemini).
+ * Skips sources with no endpoint configured or already-migrated duplicates.
+ */
+async function migrateFromNative() {
+    const migrated = [];
+
+    // Define what we can migrate
+    const sources = [
+        {
+            format: 'openai',
+            name: null, // will be auto-generated
+            endpoint: oai_settings.custom_url,
+            model: oai_settings.custom_model,
+            secretKey: SECRET_KEYS.CUSTOM,
+            includeBody: oai_settings.custom_include_body,
+            excludeBody: oai_settings.custom_exclude_body,
+            includeHeaders: oai_settings.custom_include_headers,
+        },
+        {
+            format: 'anthropic',
+            name: null,
+            endpoint: oai_settings.reverse_proxy,
+            model: oai_settings.claude_model,
+            secretKey: SECRET_KEYS.CLAUDE,
+            // reverse_proxy is shared; only migrate if claude source was active or has a key
+            condition: () => oai_settings.chat_completion_source === chat_completion_sources.CLAUDE
+                || (secret_state[SECRET_KEYS.CLAUDE] && oai_settings.claude_model),
+        },
+        {
+            format: 'gemini',
+            name: null,
+            endpoint: oai_settings.reverse_proxy || '', // gemini may use reverse_proxy for custom endpoints
+            model: oai_settings.google_model,
+            secretKey: SECRET_KEYS.MAKERSUITE,
+            // Only migrate if user has a makersuite key or is currently using it
+            condition: () => secret_state[SECRET_KEYS.MAKERSUITE]
+                || oai_settings.chat_completion_source === chat_completion_sources.MAKERSUITE,
+        },
+    ];
+
+    for (const src of sources) {
+        // Check condition if defined
+        if (src.condition && !src.condition()) continue;
+
+        // Must have at least an endpoint or a secret key configured
+        const hasEndpoint = src.endpoint && src.endpoint.trim();
+        const hasSecret = secret_state[src.secretKey] && Array.isArray(secret_state[src.secretKey]);
+        if (!hasEndpoint && !hasSecret) continue;
+
+        // Resolve the actual endpoint (with default fallback)
+        const endpoint = (src.endpoint || '').trim();
+        const fmt = getFormatOption(src.format);
+        const resolvedEndpoint = endpoint || fmt.defaultEndpoint;
+
+        // Check for duplicate: same format + same resolved endpoint already exists
+        const existing = getConnections().find(c =>
+            c.format === src.format && (c.endpoint || fmt.defaultEndpoint) === resolvedEndpoint,
+        );
+        if (existing) continue;
+
+        // Try to read the API key
+        let apiKey = '';
+        if (hasSecret) {
+            const activeSecret = secret_state[src.secretKey].find(s => s.active);
+            const secretId = activeSecret?.id || secret_state[src.secretKey][0]?.id;
+            if (secretId) {
+                const key = await findSecret(src.secretKey, secretId);
+                if (key) apiKey = key;
+            }
+        }
+
+        // Also check proxy_password as fallback for claude/gemini
+        if (!apiKey && (src.format === 'anthropic' || src.format === 'gemini')) {
+            if (oai_settings.proxy_password) {
+                apiKey = oai_settings.proxy_password;
+            }
+        }
+
+        // Parse custom include/exclude if available (from custom source)
+        let excludeBody = [];
+        let includeBody = [];
+        let includeHeaders = [];
+
+        if (src.excludeBody) {
+            excludeBody = parseYamlKeys(src.excludeBody);
+        }
+        if (src.includeBody) {
+            includeBody = parseYamlKvPairs(src.includeBody);
+        }
+        if (src.includeHeaders) {
+            includeHeaders = parseYamlKvPairs(src.includeHeaders);
+        }
+
+        const connName = src.name || `${fmt.label} (migrated)`;
+
+        const conn = {
+            id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: connName,
+            format: src.format,
+            endpoint: resolvedEndpoint,
+            apiKey,
+            model: src.model || '',
+            availableModels: src.model ? [src.model] : [],
+            excludeBody,
+            includeBody,
+            includeHeaders,
+            status: 'idle',
+            statusMessage: '',
+        };
+
+        getConnections().push(conn);
+        migrated.push(conn);
+    }
+
+    if (migrated.length > 0) {
+        saveSettingsDebounced();
+        renderUI();
+        toastr.success(`已迁移 ${migrated.length} 个连接配置：${migrated.map(c => c.name).join('、')}`);
+    } else {
+        toastr.info('未检测到可迁移的原生连接配置');
+    }
+
+    return migrated;
+}
+
+/**
+ * Parse YAML-style "key:\nkey2:\n" into array of key names.
+ */
+function parseYamlKeys(yamlStr) {
+    if (!yamlStr) return [];
+    return yamlStr.split('\n')
+        .map(line => line.replace(/:.*$/, '').trim())
+        .filter(Boolean);
+}
+
+/**
+ * Parse YAML-style "key: value\nkey2: value2\n" into [{key, value}].
+ */
+function parseYamlKvPairs(yamlStr) {
+    if (!yamlStr) return [];
+    const pairs = [];
+    for (const line of yamlStr.split('\n')) {
+        const idx = line.indexOf(':');
+        if (idx === -1) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) pairs.push({ key, value });
+    }
+    return pairs;
+}
+
 // ── UI Rendering ───────────────────────────────────────────────────
 
 function renderUI() {
     renderConnectionSelect();
     renderConnectionDetails();
     renderUrlPreview();
-    renderVaultChips();
+    renderSecretChips();
     renderCustomParams();
 }
 
@@ -528,12 +642,10 @@ function renderModelList(conn) {
     if (!conn) return;
 
     const select = $('#apihub_model_select');
-    const fmt = getFormatOption(conn.format);
     select.empty();
 
     if (conn.availableModels.length === 0) {
-        const hint = fmt ? `输入模型名或点击 Fetch（如 ${fmt.defaultModel}）` : '点击 Fetch 拉取模型列表';
-        select.append($('<option>', { value: '', text: hint, disabled: true, selected: true }));
+        select.append($('<option>', { value: '', text: '输入模型名或 Fetch 拉取', disabled: true, selected: true }));
     }
 
     for (const m of conn.availableModels) {
@@ -567,7 +679,6 @@ function renderUrlPreview() {
     $('#apihub_preview_chat_url').text(preview.chatUrl);
     $('#apihub_preview_models_method').text(preview.modelsMethod);
     $('#apihub_preview_models_url').text(preview.modelsUrl);
-    $('#apihub_preview_auth').text(preview.authScheme);
 
     if (preview.literal) {
         $('#apihub_preview_literal').show();
@@ -677,6 +788,7 @@ function bindEvents() {
         renderConnectionDetails();
         renderUrlPreview();
         renderCustomParams();
+        renderSecretChips();
     });
 
     // Format change
@@ -691,6 +803,7 @@ function bindEvents() {
         });
         renderConnectionDetails();
         renderUrlPreview();
+        renderSecretChips();
     });
 
     // Endpoint input → live preview
@@ -808,12 +921,26 @@ function bindEvents() {
     // Test connection
     $('#apihub_btn_test').on('click', testConnection);
 
-    // Key vault
-    $('#apihub_btn_keyvault').on('click', showKeyVaultPopup);
+    // Manage keys (native ST key manager)
+    $('#apihub_btn_manage_keys').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        openNativeKeyManager(conn.format);
+    });
 
     // Import/Export
     $('#apihub_btn_export').on('click', exportConnections);
     $('#apihub_btn_import').on('click', importConnections);
+
+    // Migrate from native config
+    $('#apihub_btn_migrate').on('click', async () => {
+        const confirmed = await callGenericPopup(
+            '从 SillyTavern 原生配置中检测并迁移已有的连接设置（Custom / Anthropic / Gemini）。\n\n已存在的相同配置不会重复导入。',
+            POPUP_TYPE.CONFIRM,
+        );
+        if (!confirmed) return;
+        await migrateFromNative();
+    });
 
     // ── Custom Parameters ──
 
@@ -926,8 +1053,10 @@ function confirmAddModel() {
 function restoreState() {
     const conns = getConnections();
 
-    // First run: create 3 preset connections as examples
-    if (conns.length === 0) {
+    // Replace legacy single "Default" connection with 3 format-specific presets
+    const isLegacy = conns.length === 1 && conns[0].name === 'Default';
+    if (conns.length === 0 || isLegacy) {
+        if (isLegacy) conns.splice(0, 1);
         createPresetConnection('OpenAI Compatible', 'openai');
         createPresetConnection('Anthropic', 'anthropic');
         createPresetConnection('Google Gemini', 'gemini');
@@ -965,6 +1094,11 @@ jQuery(async () => {
 
     // Bind events
     bindEvents();
+
+    // Refresh secret chips when ST secrets change
+    [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED].forEach(evt => {
+        eventSource.on(evt, () => renderSecretChips());
+    });
 
     // Restore saved state
     restoreState();

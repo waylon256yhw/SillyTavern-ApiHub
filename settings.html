@@ -79,18 +79,14 @@
             <span class="apihub_preview_method" id="apihub_preview_models_method">GET</span>
             <span class="apihub_preview_url" id="apihub_preview_models_url"></span>
         </div>
-        <div class="apihub_preview_row">
-            <span class="apihub_preview_label">Auth</span>
-            <span class="apihub_preview_url" id="apihub_preview_auth"></span>
-            <span id="apihub_preview_literal" class="apihub_badge_warn" style="display:none;">Literal Mode</span>
-        </div>
+        <span id="apihub_preview_literal" class="apihub_badge_warn" style="display:none;">Literal Mode</span>
     </div>
 
     <!-- API Key -->
     <div class="apihub_section">
         <div class="apihub_label_row">
             <label class="apihub_label">API Key</label>
-            <span id="apihub_btn_keyvault" class="apihub_link"><i class="fa-solid fa-key"></i> Key Vault</span>
+            <span id="apihub_btn_manage_keys" class="apihub_link"><i class="fa-solid fa-key"></i> 管理密钥</span>
         </div>
         <div class="apihub_inline_row">
             <input id="apihub_apikey" type="password" class="text_pole apihub_mono flex1" placeholder="sk-..." autocomplete="off" />
@@ -98,8 +94,8 @@
                 <i class="fa-solid fa-eye"></i>
             </div>
         </div>
-        <!-- Quick-fill from vault -->
-        <div id="apihub_vault_chips" class="apihub_chips" style="display:none;"></div>
+        <!-- Quick-fill from existing ST secrets -->
+        <div id="apihub_secret_chips" class="apihub_chips" style="display:none;"></div>
     </div>
 
     <!-- Models -->
@@ -128,6 +124,9 @@
         <div class="apihub_actions">
             <div id="apihub_btn_test" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-vial"></i> <span>Test</span>
+            </div>
+            <div id="apihub_btn_migrate" class="menu_button menu_button_icon">
+                <i class="fa-solid fa-download"></i> <span>Migrate</span>
             </div>
             <div id="apihub_btn_export" class="menu_button menu_button_icon">
                 <i class="fa-solid fa-file-export"></i> <span>Export</span>
