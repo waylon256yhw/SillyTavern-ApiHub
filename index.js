@@ -318,36 +318,52 @@ function syncModelToNative(conn) {
 // ── Model fetching ─────────────────────────────────────────────────
 
 let fetchAbortController = null;
+let fetchId = 0;
+
+function cancelFetch() {
+    if (fetchAbortController) {
+        fetchAbortController.abort();
+        fetchAbortController = null;
+    }
+}
 
 async function fetchModels() {
     const conn = getSelectedConnection();
     if (!conn) return;
 
     // Cancel any in-flight fetch
-    if (fetchAbortController) {
-        fetchAbortController.abort();
-    }
+    cancelFetch();
     fetchAbortController = new AbortController();
     const { signal } = fetchAbortController;
+    const myFetchId = ++fetchId;
+
+    // Auto-timeout after 20 seconds
+    const timeoutId = setTimeout(() => {
+        if (fetchId === myFetchId) cancelFetch();
+    }, 20000);
 
     // Show loading state on fetch button
     const fetchBtn = $('#apihub_btn_fetch_models');
     const originalHtml = fetchBtn.html();
     fetchBtn.html('<i class="fa-solid fa-spinner fa-spin"></i> 拉取中...').css('pointer-events', 'none');
 
-    try {
-        // Official endpoints use native ST flow; all others use CUSTOM source GET /v1/models
-        const officialHosts = {
-            openai: 'api.openai.com',
-            anthropic: 'api.anthropic.com',
-            gemini: 'googleapis.com',
-        };
-        const officialHost = officialHosts[conn.format];
-        const isOfficial = officialHost && conn.endpoint.includes(officialHost);
+    const cleanup = () => {
+        clearTimeout(timeoutId);
+        if (fetchId === myFetchId) {
+            fetchAbortController = null;
+            fetchBtn.html(originalHtml).css('pointer-events', '');
+        }
+    };
 
-        if (isOfficial) {
+    try {
+        // Only official Gemini needs native flow (ST's makersuite backend handles /models?key=)
+        const isOfficialGemini = conn.format === 'gemini' && conn.endpoint.includes('googleapis.com');
+
+        if (isOfficialGemini) {
             await activateConnection(conn.id);
             await fetchModelsViaNativeConnect(conn);
+            cleanup();
+            renderUI();
             return;
         }
 
@@ -395,12 +411,15 @@ async function fetchModels() {
             toastr.error(`拉取失败: ${response.status} ${errText.slice(0, 100)}`);
         }
     } catch (err) {
-        if (err.name === 'AbortError') return; // cancelled by new fetch
-        toastr.error(err.message || '拉取失败');
+        if (err.name === 'AbortError') {
+            if (fetchId !== myFetchId) return; // cancelled by new fetch
+            toastr.warning('拉取超时');
+        } else {
+            toastr.error(err.message || '拉取失败');
+        }
     }
 
-    fetchAbortController = null;
-    fetchBtn.html(originalHtml).css('pointer-events', '');
+    cleanup();
     renderUI();
 }
 
@@ -955,6 +974,7 @@ function bindEvents() {
 
     // Connection selector — switch = activate
     $('#apihub_connection_select').on('change', async () => {
+        cancelFetch(); // cancel any in-flight model fetch
         const conn = getSelectedConnection();
         if (!conn) return;
         renderConnectionDetails();
