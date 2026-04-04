@@ -5,18 +5,18 @@
  * protocol-centric UI (OpenAI Compatible / Anthropic / Gemini).
  */
 
-import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
-import { oai_settings, chat_completion_sources, model_list } from '../../openai.js';
-import { saveSettingsDebounced, getRequestHeaders } from '../../../script.js';
-import { eventSource, event_types } from '../../../script.js';
-import { SECRET_KEYS, writeSecret } from '../../secrets.js';
-import { uuidv4 } from '../../utils.js';
-import { callGenericPopup, POPUP_TYPE } from '../../popup.js';
+import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
+import { oai_settings, chat_completion_sources, model_list } from '../../../openai.js';
+import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
+import { eventSource, event_types } from '../../../../script.js';
+import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
+import { uuidv4 } from '../../../utils.js';
+import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, maskApiKey } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const MODULE_NAME = 'SillyTavern-ApiHub';
+const MODULE_NAME = 'third-party/SillyTavern-ApiHub';
 
 const DEFAULT_SETTINGS = {
     connections: [],
