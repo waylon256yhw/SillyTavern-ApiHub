@@ -243,7 +243,8 @@ async function fetchModels() {
             anthropic: 'api.anthropic.com',
             gemini: 'googleapis.com',
         };
-        const isOfficial = conn.endpoint.includes(officialHosts[conn.format] || '');
+        const officialHost = officialHosts[conn.format];
+        const isOfficial = officialHost && conn.endpoint.includes(officialHost);
 
         if (isOfficial) {
             await activateConnection(conn.id);
