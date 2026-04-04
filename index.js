@@ -237,15 +237,18 @@ async function fetchModels() {
     renderStatus(conn);
 
     try {
-        // Gemini: use native flow (activate + trigger Connect button)
-        // ST's makersuite backend handles the /models?key= URL construction correctly
-        if (conn.format === 'gemini') {
+        // Gemini with official Google endpoint: use native flow
+        // Gemini with custom proxy: use CUSTOM source (proxy supports OpenAI /models)
+        const isOfficialGemini = conn.format === 'gemini' &&
+            conn.endpoint.includes('googleapis.com');
+
+        if (isOfficialGemini) {
             await activateConnection(conn.id);
             await fetchModelsViaNativeConnect(conn);
             return;
         }
 
-        // OpenAI / Anthropic: direct backend call with CUSTOM source
+        // OpenAI / Anthropic / Gemini proxies: direct backend call with CUSTOM source
         const { normalized } = normalizeUrl(conn.endpoint, conn.format);
 
         // Write API key to the correct secret slot
