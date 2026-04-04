@@ -328,10 +328,12 @@ function exportConnections() {
             claude_model: oai_settings.claude_model,
             google_model: oai_settings.google_model,
             proxies: proxies.map(p => ({ name: p.name, url: p.url, hasPassword: !!p.password })),
-            connectionManagerProfiles: (extension_settings?.connectionManager?.profiles || []).map(p => ({
-                name: p.name, api: p.api, 'api-url': p['api-url'], model: p.model,
-                proxy: p.proxy, hasSecretId: !!p['secret-id'],
-            })),
+            connectionManagerProfiles: (extension_settings?.connectionManager?.profiles || []).map(p => {
+                const clean = { ...p };
+                // Redact secret values but keep structure
+                if (clean['secret-id']) clean['secret-id'] = '***';
+                return clean;
+            }),
         },
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
