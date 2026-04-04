@@ -1,0 +1,148 @@
+<div id="apihub_container" class="apihub">
+    <!-- Connection selector bar -->
+    <div class="apihub_section">
+        <div class="apihub_connection_bar">
+            <select id="apihub_connection_select" class="text_pole"></select>
+            <div id="apihub_btn_rename" class="menu_button menu_button_icon" title="Rename">
+                <i class="fa-solid fa-pencil"></i>
+            </div>
+            <div id="apihub_btn_duplicate" class="menu_button menu_button_icon" title="Duplicate">
+                <i class="fa-solid fa-copy"></i>
+            </div>
+            <div id="apihub_btn_activate" class="menu_button menu_button_icon" title="Activate">
+                <i class="fa-solid fa-bolt"></i>
+            </div>
+            <div id="apihub_btn_add" class="menu_button menu_button_icon" title="New Connection">
+                <i class="fa-solid fa-plus"></i>
+            </div>
+            <div id="apihub_btn_delete" class="menu_button menu_button_icon" title="Delete">
+                <i class="fa-solid fa-trash-can"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inline rename -->
+    <div id="apihub_rename_row" class="apihub_section" style="display:none;">
+        <div class="apihub_inline_row">
+            <input id="apihub_rename_input" type="text" class="text_pole" placeholder="Connection name" />
+            <div id="apihub_rename_ok" class="menu_button menu_button_icon"><i class="fa-solid fa-check"></i></div>
+            <div id="apihub_rename_cancel" class="menu_button menu_button_icon"><i class="fa-solid fa-xmark"></i></div>
+        </div>
+    </div>
+
+    <!-- Inline new connection -->
+    <div id="apihub_new_row" class="apihub_section" style="display:none;">
+        <div class="apihub_inline_row">
+            <input id="apihub_new_input" type="text" class="text_pole" placeholder="New connection name (e.g. OpenRouter, 硅基流动)" />
+            <div id="apihub_new_ok" class="menu_button menu_button_icon"><i class="fa-solid fa-check"></i></div>
+            <div id="apihub_new_cancel" class="menu_button menu_button_icon"><i class="fa-solid fa-xmark"></i></div>
+        </div>
+    </div>
+
+    <!-- Active badge -->
+    <div id="apihub_active_badge" class="apihub_section" style="display:none;">
+        <span class="apihub_badge apihub_badge_active"><i class="fa-solid fa-bolt"></i> Active Connection</span>
+    </div>
+    <div id="apihub_inactive_hint" class="apihub_section" style="display:none;">
+        <span class="apihub_hint">
+            Active: <span id="apihub_active_name">—</span>
+            <span id="apihub_btn_activate_inline" class="apihub_link">Activate this</span>
+        </span>
+    </div>
+
+    <!-- Protocol format -->
+    <div class="apihub_section">
+        <label class="apihub_label">API Format</label>
+        <select id="apihub_format_select" class="text_pole">
+            <option value="openai">OpenAI Compatible</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="gemini">Google Gemini</option>
+        </select>
+    </div>
+
+    <!-- Endpoint URL -->
+    <div class="apihub_section">
+        <label class="apihub_label">Endpoint URL</label>
+        <input id="apihub_endpoint" type="text" class="text_pole apihub_mono" placeholder="https://api.openai.com" />
+        <small class="apihub_hint">Append <code>#</code> to skip URL normalization (literal mode)</small>
+    </div>
+
+    <!-- URL Preview -->
+    <div id="apihub_url_preview" class="apihub_section apihub_preview" style="display:none;">
+        <div class="apihub_preview_row">
+            <span class="apihub_preview_label">Chat</span>
+            <span class="apihub_preview_method" id="apihub_preview_chat_method">POST</span>
+            <span class="apihub_preview_url" id="apihub_preview_chat_url"></span>
+        </div>
+        <div class="apihub_preview_row">
+            <span class="apihub_preview_label">Models</span>
+            <span class="apihub_preview_method" id="apihub_preview_models_method">GET</span>
+            <span class="apihub_preview_url" id="apihub_preview_models_url"></span>
+        </div>
+        <div class="apihub_preview_row">
+            <span class="apihub_preview_label">Auth</span>
+            <span class="apihub_preview_url" id="apihub_preview_auth"></span>
+            <span id="apihub_preview_literal" class="apihub_badge_warn" style="display:none;">Literal Mode</span>
+        </div>
+    </div>
+
+    <!-- API Key -->
+    <div class="apihub_section">
+        <div class="apihub_label_row">
+            <label class="apihub_label">API Key</label>
+            <span id="apihub_btn_keyvault" class="apihub_link"><i class="fa-solid fa-key"></i> Key Vault</span>
+        </div>
+        <div class="apihub_inline_row">
+            <input id="apihub_apikey" type="password" class="text_pole apihub_mono flex1" placeholder="sk-..." autocomplete="off" />
+            <div id="apihub_btn_show_key" class="menu_button menu_button_icon" title="Toggle visibility">
+                <i class="fa-solid fa-eye"></i>
+            </div>
+        </div>
+        <!-- Quick-fill from vault -->
+        <div id="apihub_vault_chips" class="apihub_chips" style="display:none;"></div>
+    </div>
+
+    <!-- Models -->
+    <div class="apihub_section">
+        <div class="apihub_label_row">
+            <label class="apihub_label">Model</label>
+            <div class="apihub_label_actions">
+                <span id="apihub_btn_add_model" class="apihub_link">+ Add</span>
+                <span id="apihub_btn_fetch_models" class="apihub_link"><i class="fa-solid fa-rotate"></i> Fetch</span>
+            </div>
+        </div>
+        <select id="apihub_model_select" class="text_pole"></select>
+    </div>
+
+    <!-- Inline add model -->
+    <div id="apihub_add_model_row" class="apihub_section" style="display:none;">
+        <div class="apihub_inline_row">
+            <input id="apihub_add_model_input" type="text" class="text_pole" placeholder="Model ID (e.g. gpt-4o)" />
+            <div id="apihub_add_model_ok" class="menu_button menu_button_icon"><i class="fa-solid fa-check"></i></div>
+            <div id="apihub_add_model_cancel" class="menu_button menu_button_icon"><i class="fa-solid fa-xmark"></i></div>
+        </div>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="apihub_section">
+        <div class="apihub_actions">
+            <div id="apihub_btn_test" class="menu_button menu_button_icon">
+                <i class="fa-solid fa-vial"></i> <span>Test</span>
+            </div>
+            <div id="apihub_btn_export" class="menu_button menu_button_icon">
+                <i class="fa-solid fa-file-export"></i> <span>Export</span>
+            </div>
+            <div id="apihub_btn_import" class="menu_button menu_button_icon">
+                <i class="fa-solid fa-file-import"></i> <span>Import</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Connection status -->
+    <div id="apihub_status_section" class="apihub_section" style="display:none;">
+        <div class="apihub_status_row">
+            <span id="apihub_status_dot" class="apihub_dot"></span>
+            <span id="apihub_status_text" class="apihub_status_text"></span>
+        </div>
+    </div>
+</div>

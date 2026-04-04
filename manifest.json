@@ -1,0 +1,11 @@
+{
+    "display_name": "API Hub",
+    "loading_order": 2,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern-ApiHub",
+    "version": "0.1.0",
+    "homePage": "https://github.com/SillyTavern-ApiHub"
+}
