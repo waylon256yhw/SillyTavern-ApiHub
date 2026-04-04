@@ -70,16 +70,16 @@ function getSelectedConnection() {
 
 // ── Connection CRUD ────────────────────────────────────────────────
 
-function createConnection(name) {
-    const fmt = FORMAT_OPTIONS[0]; // default: openai
+function createConnection(name, format) {
+    const fmt = getFormatOption(format) || FORMAT_OPTIONS[0];
     const conn = {
         id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: name || 'New Connection',
         format: fmt.value,
-        endpoint: fmt.defaultEndpoint,
+        endpoint: '',
         apiKey: '',
-        model: fmt.defaultModel,
-        availableModels: [...fmt.defaultModels],
+        model: '',
+        availableModels: [],
         excludeBody: [],          // string[] — parameter names to exclude
         includeBody: [],          // { key, value }[] — custom body params
         includeHeaders: [],       // { key, value }[] — custom headers
@@ -88,6 +88,30 @@ function createConnection(name) {
     };
     getConnections().push(conn);
     saveSettingsDebounced();
+    return conn;
+}
+
+/**
+ * Create a preset connection with real defaults (for first-run examples).
+ */
+function createPresetConnection(name, format) {
+    const fmt = getFormatOption(format);
+    if (!fmt) return null;
+    const conn = {
+        id: `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        format: fmt.value,
+        endpoint: fmt.defaultEndpoint,
+        apiKey: '',
+        model: fmt.defaultModel,
+        availableModels: [...fmt.defaultModels],
+        excludeBody: [],
+        includeBody: [],
+        includeHeaders: [],
+        status: 'idle',
+        statusMessage: '',
+    };
+    getConnections().push(conn);
     return conn;
 }
 
@@ -470,12 +494,13 @@ function renderConnectionDetails() {
     if (!conn) return;
 
     const activeId = getActiveConnectionId();
+    const fmt = getFormatOption(conn.format);
 
     // Format
     $('#apihub_format_select').val(conn.format);
 
-    // Endpoint
-    $('#apihub_endpoint').val(conn.endpoint);
+    // Endpoint — dynamic placeholder based on format
+    $('#apihub_endpoint').val(conn.endpoint).attr('placeholder', fmt ? fmt.defaultEndpoint : 'https://...');
 
     // API key
     $('#apihub_apikey').val(conn.apiKey);
@@ -503,10 +528,12 @@ function renderModelList(conn) {
     if (!conn) return;
 
     const select = $('#apihub_model_select');
+    const fmt = getFormatOption(conn.format);
     select.empty();
 
     if (conn.availableModels.length === 0) {
-        select.append($('<option>', { value: '', text: 'No models — click Fetch', disabled: true }));
+        const hint = fmt ? `输入模型名或点击 Fetch（如 ${fmt.defaultModel}）` : '点击 Fetch 拉取模型列表';
+        select.append($('<option>', { value: '', text: hint, disabled: true, selected: true }));
     }
 
     for (const m of conn.availableModels) {
@@ -657,12 +684,10 @@ function bindEvents() {
         const conn = getSelectedConnection();
         if (!conn) return;
         const format = $(this).val();
-        const fmt = getFormatOption(format);
         updateConnection(conn.id, {
             format,
-            endpoint: fmt.defaultEndpoint,
-            model: fmt.defaultModel,
-            availableModels: [...fmt.defaultModels],
+            model: '',
+            availableModels: [],
         });
         renderConnectionDetails();
         renderUrlPreview();
@@ -901,9 +926,12 @@ function confirmAddModel() {
 function restoreState() {
     const conns = getConnections();
 
-    // If no connections exist, create a default one
+    // First run: create 3 preset connections as examples
     if (conns.length === 0) {
-        createConnection('Default');
+        createPresetConnection('OpenAI Compatible', 'openai');
+        createPresetConnection('Anthropic', 'anthropic');
+        createPresetConnection('Google Gemini', 'gemini');
+        saveSettingsDebounced();
     }
 
     renderUI();
