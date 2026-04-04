@@ -314,12 +314,31 @@ function openNativeKeyManager(format) {
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
-    const data = getConnections().map(c => ({ ...c, apiKey: '' })); // strip keys
+    const data = {
+        apiHub: {
+            connections: getConnections().map(c => ({ ...c, apiKey: c.apiKey ? '***' : '' })),
+            activeConnectionId: getActiveConnectionId(),
+        },
+        // Debug: include native config for troubleshooting
+        native: {
+            chat_completion_source: oai_settings.chat_completion_source,
+            custom_url: oai_settings.custom_url,
+            custom_model: oai_settings.custom_model,
+            reverse_proxy: oai_settings.reverse_proxy,
+            claude_model: oai_settings.claude_model,
+            google_model: oai_settings.google_model,
+            proxies: proxies.map(p => ({ name: p.name, url: p.url, hasPassword: !!p.password })),
+            connectionManagerProfiles: (extension_settings?.connectionManager?.profiles || []).map(p => ({
+                name: p.name, api: p.api, 'api-url': p['api-url'], model: p.model,
+                proxy: p.proxy, hasSecretId: !!p['secret-id'],
+            })),
+        },
+    };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `apihub-connections-${Date.now()}.json`;
+    a.download = `apihub-debug-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
 }
@@ -333,7 +352,9 @@ function importConnections() {
         if (!file) return;
         try {
             const text = await file.text();
-            const data = JSON.parse(text);
+            const raw = JSON.parse(text);
+            // Support both formats: array (legacy) or {apiHub: {connections: [...]}} (new)
+            const data = Array.isArray(raw) ? raw : (raw?.apiHub?.connections || []);
             if (!Array.isArray(data) || data.length === 0) {
                 toastr.warning('Import failed: file contains no connections');
                 return;
@@ -602,16 +623,8 @@ function renderConnectionDetails() {
     // Model select
     renderModelList(conn);
 
-    // Active badge
-    if (conn.id === activeId) {
-        $('#apihub_active_badge').show();
-        $('#apihub_inactive_hint').hide();
-    } else {
-        $('#apihub_active_badge').hide();
-        const activeName = getActiveConnection()?.name || '—';
-        $('#apihub_active_name').text(activeName);
-        $('#apihub_inactive_hint').show();
-    }
+    // Active badge — always show since switch = activate
+    $('#apihub_active_badge').toggle(conn.id === activeId);
 
     // Status
     renderStatus(conn);
@@ -761,11 +774,14 @@ function hideNativeUI() {
 // ── Event Binding ──────────────────────────────────────────────────
 
 function bindEvents() {
-    // Connection selector
-    $('#apihub_connection_select').on('change', () => {
+    // Connection selector — switch = activate
+    $('#apihub_connection_select').on('change', async () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
         renderConnectionDetails();
         renderUrlPreview();
         renderCustomParams();
+        await activateConnection(conn.id);
     });
 
     // Format change
@@ -857,16 +873,12 @@ function bindEvents() {
         }
     });
 
-    // Activate
-    $('#apihub_btn_activate').on('click', async () => {
+    // Save — re-activate current connection with latest edits
+    $('#apihub_btn_save').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
         await activateConnection(conn.id);
-    });
-    $('#apihub_btn_activate_inline').on('click', async () => {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        await activateConnection(conn.id);
+        toastr.success('连接配置已保存并激活');
     });
 
     // Delete
@@ -1046,9 +1058,9 @@ function restoreState() {
     const isLegacy = conns.length === 1 && conns[0].name === 'Default';
     if (conns.length === 0 || isLegacy) {
         if (isLegacy) conns.splice(0, 1);
-        createPresetConnection('OpenAI Compatible', 'openai');
-        createPresetConnection('Anthropic', 'anthropic');
-        createPresetConnection('Google Gemini', 'gemini');
+        createPresetConnection('示例 OpenAI Compatible', 'openai');
+        createPresetConnection('示例 Anthropic', 'anthropic');
+        createPresetConnection('示例 Google Gemini', 'gemini');
         saveSettingsDebounced();
     }
 
