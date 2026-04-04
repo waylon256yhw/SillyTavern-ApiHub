@@ -80,11 +80,13 @@ function createConnection(name) {
         apiKey: '',
         model: fmt.defaultModel,
         availableModels: [...fmt.defaultModels],
+        excludeBody: [],          // string[] — parameter names to exclude
+        includeBody: [],          // { key, value }[] — custom body params
+        includeHeaders: [],       // { key, value }[] — custom headers
         status: 'idle',
         statusMessage: '',
     };
     getConnections().push(conn);
-    getSettings().activeConnectionId = conn.id;
     saveSettingsDebounced();
     return conn;
 }
@@ -127,6 +129,38 @@ function duplicateConnection(id) {
     return dup;
 }
 
+// ── YAML conversion for custom parameters ────────────────────────
+
+/**
+ * Convert key-value pairs array to YAML string.
+ * Values are auto-typed: numbers stay numeric, booleans stay boolean, rest is string.
+ */
+function kvPairsToYaml(pairs) {
+    if (!pairs || pairs.length === 0) return '';
+    const lines = [];
+    for (const { key, value } of pairs) {
+        if (!key) continue;
+        // Try to preserve types: number, boolean, null
+        let v = value;
+        if (v === 'true') v = true;
+        else if (v === 'false') v = false;
+        else if (v === 'null' || v === '') v = null;
+        else if (!isNaN(v) && v.trim() !== '') v = Number(v);
+        else v = JSON.stringify(v); // quote strings for YAML safety
+        lines.push(`${key}: ${v}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Convert exclude keys array to YAML string (list of single-key objects with null value).
+ * Format: "key1:\nkey2:\n..."
+ */
+function excludeKeysToYaml(keys) {
+    if (!keys || keys.length === 0) return '';
+    return keys.map(k => `${k}:`).join('\n');
+}
+
 // ── Core: Activate Connection → sync to oai_settings ───────────────
 
 async function activateConnection(id) {
@@ -163,6 +197,11 @@ async function activateConnection(id) {
     const targetSource = FORMAT_TO_SOURCE[conn.format];
     $('#chat_completion_source').val(targetSource).trigger('change');
 
+    // Write custom parameters as YAML strings
+    oai_settings.custom_include_body = kvPairsToYaml(conn.includeBody);
+    oai_settings.custom_exclude_body = excludeKeysToYaml(conn.excludeBody);
+    oai_settings.custom_include_headers = kvPairsToYaml(conn.includeHeaders);
+
     saveSettingsDebounced();
     renderUI();
 }
@@ -182,8 +221,9 @@ async function fetchModels() {
     // Trigger the native Connect button which calls getStatusOpen()
     $('#api_button_openai').trigger('click');
 
-    // Wait for model_list to populate (poll with timeout)
-    const startLen = model_list.length;
+    // Wait for model_list to be reassigned (poll with timeout)
+    // ST's getStatusOpen does `model_list = data.map(...)`, so the reference changes
+    const startRef = model_list;
     let waited = 0;
     const interval = 200;
     const timeout = 15000;
@@ -191,7 +231,7 @@ async function fetchModels() {
     await new Promise((resolve) => {
         const check = () => {
             waited += interval;
-            if (model_list.length > 0 || waited >= timeout) {
+            if (model_list !== startRef || waited >= timeout) {
                 resolve();
                 return;
             }
@@ -228,27 +268,12 @@ async function testConnection() {
     const conn = getSelectedConnection();
     if (!conn) return;
 
-    updateConnection(conn.id, { status: 'testing', statusMessage: 'Testing...' });
-    renderStatus(conn);
+    // Ensure this connection is activated so source/URL/key are set
+    await activateConnection(conn.id);
 
-    try {
-        await activateConnection(conn.id);
-        // activateConnection triggers reconnectOpenAi → getStatusOpen
-        // Wait briefly for status to settle
-        await new Promise(r => setTimeout(r, 2000));
-
-        // Check if online
-        const statusText = $('#online_status_text').text();
-        if (statusText && !statusText.toLowerCase().includes('no connection')) {
-            updateConnection(conn.id, { status: 'connected', statusMessage: `Connected: ${statusText}` });
-        } else {
-            updateConnection(conn.id, { status: 'error', statusMessage: statusText || 'Connection failed' });
-        }
-    } catch (err) {
-        updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Connection failed' });
-    }
-
-    renderStatus(getConnection(conn.id));
+    // Trigger the native test button — it sends a quiet "Hi" request
+    // and shows toastr success/error banners
+    $('#test_api_button').trigger('click');
 }
 
 // ── Key Vault ──────────────────────────────────────────────────────
@@ -291,8 +316,8 @@ async function showKeyVaultPopup() {
 
     const dlg = $(html);
 
-    // Wire delete buttons
-    dlg.find('.apihub_vault_delete').on('click', function () {
+    // Wire delete buttons (event delegation for dynamically added entries)
+    dlg.on('click', '.apihub_vault_delete', function () {
         const vid = $(this).data('vault-id');
         const idx = vault.findIndex(v => v.id === vid);
         if (idx !== -1) {
@@ -311,7 +336,19 @@ async function showKeyVaultPopup() {
         vault.push({ id: uuidv4(), name, key });
         saveSettingsDebounced();
         renderVaultChips();
-        // Close popup by resolving
+        // Re-render the entries list and clear inputs
+        dlg.find('#apihub_vault_new_name').val('');
+        dlg.find('#apihub_vault_new_key').val('');
+        // Add the new entry to the visible list
+        const entryHtml = `<div class="apihub_vault_entry" style="display:flex;align-items:center;gap:6px;">
+            <span style="flex:1;font-size:0.9em;">${name}</span>
+            <span style="font-size:0.75em;opacity:0.5;font-family:monospace;">${maskApiKey(key)}</span>
+            <span class="apihub_vault_delete menu_button menu_button_icon" data-vault-id="${vault[vault.length - 1].id}" title="Delete">
+                <i class="fa-solid fa-trash-can"></i>
+            </span>
+        </div>`;
+        dlg.find('.apihub_vault_popup > div').first().append(entryHtml);
+        toastr.success(`Key "${name}" saved to vault`);
     });
 
     await callGenericPopup(dlg, POPUP_TYPE.TEXT, '', { wide: false, large: false });
@@ -360,14 +397,35 @@ function importConnections() {
         try {
             const text = await file.text();
             const data = JSON.parse(text);
-            if (!Array.isArray(data) || data.length === 0) return;
+            if (!Array.isArray(data) || data.length === 0) {
+                toastr.warning('Import failed: file contains no connections');
+                return;
+            }
+            const validFormats = FORMAT_OPTIONS.map(f => f.value);
+            let imported = 0;
             for (const c of data) {
+                // Validate required fields
+                if (!c.name || !c.format || !validFormats.includes(c.format)) {
+                    continue;
+                }
                 c.id = `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                 c.status = 'idle';
                 c.statusMessage = '';
                 c.apiKey = c.apiKey || '';
+                c.endpoint = c.endpoint || getFormatOption(c.format).defaultEndpoint;
+                c.model = c.model || getFormatOption(c.format).defaultModel;
+                c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [...getFormatOption(c.format).defaultModels];
+                c.excludeBody = Array.isArray(c.excludeBody) ? c.excludeBody : [];
+                c.includeBody = Array.isArray(c.includeBody) ? c.includeBody : [];
+                c.includeHeaders = Array.isArray(c.includeHeaders) ? c.includeHeaders : [];
                 getConnections().push(c);
+                imported++;
             }
+            if (imported === 0) {
+                toastr.warning('Import failed: no valid connections found');
+                return;
+            }
+            toastr.success(`Imported ${imported} connection(s)`);
             saveSettingsDebounced();
             renderUI();
         } catch {
@@ -384,6 +442,7 @@ function renderUI() {
     renderConnectionDetails();
     renderUrlPreview();
     renderVaultChips();
+    renderCustomParams();
 }
 
 function renderConnectionSelect() {
@@ -508,23 +567,79 @@ function renderStatus(conn) {
     $('#apihub_status_section').show();
 }
 
+// ── Custom Parameters Rendering ───────────────────────────────────
+
+function renderCustomParams(conn) {
+    conn = conn || getSelectedConnection();
+    if (!conn) return;
+
+    // Ensure arrays exist (migration for old connections)
+    conn.excludeBody = conn.excludeBody || [];
+    conn.includeBody = conn.includeBody || [];
+    conn.includeHeaders = conn.includeHeaders || [];
+
+    renderExcludeBody(conn);
+    renderKvList($('#apihub_include_body'), conn.includeBody, 'body');
+    renderKvList($('#apihub_include_headers'), conn.includeHeaders, 'header');
+}
+
+function renderExcludeBody(conn) {
+    $('#apihub_exclude_body input[type="checkbox"]').each(function () {
+        $(this).prop('checked', conn.excludeBody.includes($(this).val()));
+    });
+}
+
+function renderKvList(container, pairs, type) {
+    container.empty();
+    for (let i = 0; i < pairs.length; i++) {
+        const row = buildKvRow(pairs[i].key, pairs[i].value, type, i);
+        container.append(row);
+    }
+}
+
+function buildKvRow(key, value, type, index) {
+    const row = $('<div class="apihub_kv_row"></div>');
+    const keyInput = $(`<input type="text" class="text_pole apihub_kv_key" placeholder="key" value="${escapeHtml(key || '')}" data-type="${type}" data-index="${index}" />`);
+    const valInput = $(`<input type="text" class="text_pole apihub_kv_value" placeholder="value" value="${escapeHtml(value || '')}" data-type="${type}" data-index="${index}" />`);
+    const delBtn = $(`<div class="menu_button menu_button_icon apihub_kv_delete" data-type="${type}" data-index="${index}" title="Remove"><i class="fa-solid fa-xmark"></i></div>`);
+    row.append(keyInput, valInput, delBtn);
+    return row;
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // ── Hide native UI elements ────────────────────────────────────────
 
 function hideNativeUI() {
     // Hide the native "Chat Completion Source" label and dropdown
-    // They live directly inside #openai_api
     const sourceSelect = $('#chat_completion_source');
-    // Hide the h4 label above it
     sourceSelect.prevAll('h4').first().hide();
     sourceSelect.hide();
 
-    // Hide native API key inputs and reverse proxy sections — these have data-source
-    // attributes and are managed by toggleChatCompletionForms(). We hide additional
-    // elements that remain visible for the selected source.
-    // Hide the native custom URL input
-    $('#custom_api_url_text').closest('.range-block').hide();
-    // Hide the native custom model input
-    $('#custom_model_id').closest('.range-block').hide();
+    // Hide native API connection forms for the three sources we manage.
+    // These have data-source attributes and are toggled by toggleChatCompletionForms(),
+    // so we need to re-hide them each time the source changes.
+    const formsToHide = '#claude_form, #makersuite_form, #custom_form';
+
+    // Hide the reverse proxy section (used by claude/makersuite)
+    const reverseProxySection = '#openai_reverse_proxy, #openai_reverse_proxy_name, #ReverseProxyWarningMessage, #ReverseProxyWarningMessage2';
+
+    // Hide custom source URL and model inputs
+    const customInputs = '#custom_api_url_text, #custom_model_id';
+
+    // Hide native "Additional Parameters" button
+    const additionalParams = '#customize_additional_parameters';
+
+    // Apply initial hide
+    const allSelectors = `${formsToHide}, ${reverseProxySection}, ${customInputs}, ${additionalParams}`;
+    $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
+
+    // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
+    $(document).on('change', '#chat_completion_source', () => {
+        $(allSelectors).closest('.range-block, form, div[data-source]').add($(additionalParams)).hide();
+    });
 }
 
 // ── Event Binding ──────────────────────────────────────────────────
@@ -534,6 +649,7 @@ function bindEvents() {
     $('#apihub_connection_select').on('change', () => {
         renderConnectionDetails();
         renderUrlPreview();
+        renderCustomParams();
     });
 
     // Format change
@@ -556,8 +672,7 @@ function bindEvents() {
     $('#apihub_endpoint').on('input', function () {
         const conn = getSelectedConnection();
         if (!conn) return;
-        conn.endpoint = $(this).val();
-        saveSettingsDebounced();
+        updateConnection(conn.id, { endpoint: $(this).val() });
         renderUrlPreview();
     });
 
@@ -565,8 +680,7 @@ function bindEvents() {
     $('#apihub_apikey').on('input', function () {
         const conn = getSelectedConnection();
         if (!conn) return;
-        conn.apiKey = $(this).val();
-        saveSettingsDebounced();
+        updateConnection(conn.id, { apiKey: $(this).val() });
     });
 
     // Toggle key visibility
@@ -642,9 +756,11 @@ function bindEvents() {
     });
 
     // Delete
-    $('#apihub_btn_delete').on('click', () => {
+    $('#apihub_btn_delete').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn || getConnections().length <= 1) return;
+        const confirmed = await callGenericPopup(`Delete connection "${conn.name}"?`, POPUP_TYPE.CONFIRM);
+        if (!confirmed) return;
         deleteConnection(conn.id);
         renderUI();
     });
@@ -673,6 +789,78 @@ function bindEvents() {
     // Import/Export
     $('#apihub_btn_export').on('click', exportConnections);
     $('#apihub_btn_import').on('click', importConnections);
+
+    // ── Custom Parameters ──
+
+    // Collapsible toggle
+    $('#apihub_params_toggle').on('click', () => {
+        $('#apihub_params_panel').toggle();
+        $('#apihub_params_toggle .apihub_collapse_icon').toggleClass('open');
+    });
+
+    // Exclude body checkboxes
+    $('#apihub_exclude_body').on('change', 'input[type="checkbox"]', function () {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        conn.excludeBody = conn.excludeBody || [];
+        const key = $(this).val();
+        if ($(this).is(':checked')) {
+            if (!conn.excludeBody.includes(key)) conn.excludeBody.push(key);
+        } else {
+            conn.excludeBody = conn.excludeBody.filter(k => k !== key);
+        }
+        saveSettingsDebounced();
+    });
+
+    // Add body param
+    $('#apihub_btn_add_param').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        conn.includeBody = conn.includeBody || [];
+        conn.includeBody.push({ key: '', value: '' });
+        saveSettingsDebounced();
+        renderKvList($('#apihub_include_body'), conn.includeBody, 'body');
+    });
+
+    // Add header
+    $('#apihub_btn_add_header').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        conn.includeHeaders = conn.includeHeaders || [];
+        conn.includeHeaders.push({ key: '', value: '' });
+        saveSettingsDebounced();
+        renderKvList($('#apihub_include_headers'), conn.includeHeaders, 'header');
+    });
+
+    // KV input changes (event delegation)
+    $(document).on('input', '.apihub_kv_key, .apihub_kv_value', function () {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        const type = $(this).data('type');
+        const index = $(this).data('index');
+        const arr = type === 'body' ? conn.includeBody : conn.includeHeaders;
+        if (!arr || !arr[index]) return;
+        if ($(this).hasClass('apihub_kv_key')) {
+            arr[index].key = $(this).val();
+        } else {
+            arr[index].value = $(this).val();
+        }
+        saveSettingsDebounced();
+    });
+
+    // KV delete (event delegation)
+    $(document).on('click', '.apihub_kv_delete', function () {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        const type = $(this).data('type');
+        const index = $(this).data('index');
+        const arr = type === 'body' ? conn.includeBody : conn.includeHeaders;
+        if (!arr) return;
+        arr.splice(index, 1);
+        saveSettingsDebounced();
+        const container = type === 'body' ? $('#apihub_include_body') : $('#apihub_include_headers');
+        renderKvList(container, arr, type);
+    });
 }
 
 // ── Inline action helpers ──────────────────────────────────────────

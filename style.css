@@ -241,3 +241,82 @@
 
 /* Flex utility */
 .flex1 { flex: 1; min-width: 0; }
+
+/* Collapsible section */
+.apihub_collapsible {
+    cursor: pointer;
+    user-select: none;
+}
+
+.apihub_collapsible:hover {
+    opacity: 0.8;
+}
+
+.apihub_collapse_icon {
+    font-size: 0.7em;
+    margin-right: 4px;
+    transition: transform 0.15s;
+}
+
+.apihub_collapse_icon.open {
+    transform: rotate(90deg);
+}
+
+.apihub_sublabel {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.6;
+}
+
+/* Exclude params checkbox grid */
+.apihub_checkbox_grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+}
+
+.apihub_checkbox_item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    font-family: var(--monoFontFamily, 'Courier New', monospace);
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.75;
+    cursor: pointer;
+}
+
+.apihub_checkbox_item:hover {
+    opacity: 1;
+}
+
+.apihub_checkbox_item input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+/* Key-value pair list */
+.apihub_kv_list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.apihub_kv_row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.apihub_kv_row input.apihub_kv_key {
+    flex: 0 0 35%;
+    min-width: 0;
+    font-family: var(--monoFontFamily, 'Courier New', monospace);
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.apihub_kv_row input.apihub_kv_value {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--monoFontFamily, 'Courier New', monospace);
+    font-size: calc(var(--mainFontSize) * 0.85);
+}

@@ -145,4 +145,46 @@
             <span id="apihub_status_text" class="apihub_status_text"></span>
         </div>
     </div>
+
+    <!-- Custom Parameters -->
+    <div class="apihub_section">
+        <div class="apihub_label_row apihub_collapsible" id="apihub_params_toggle">
+            <label class="apihub_label"><i class="fa-solid fa-chevron-right apihub_collapse_icon"></i> Custom Parameters</label>
+        </div>
+    </div>
+
+    <div id="apihub_params_panel" style="display:none;">
+        <!-- Exclude body parameters -->
+        <div class="apihub_section">
+            <label class="apihub_label apihub_sublabel">Exclude Parameters</label>
+            <small class="apihub_hint">Checked parameters will be removed from the request body</small>
+            <div id="apihub_exclude_body" class="apihub_checkbox_grid">
+                <label class="apihub_checkbox_item"><input type="checkbox" value="temperature" /><span>temperature</span></label>
+                <label class="apihub_checkbox_item"><input type="checkbox" value="top_p" /><span>top_p</span></label>
+                <label class="apihub_checkbox_item"><input type="checkbox" value="top_k" /><span>top_k</span></label>
+                <label class="apihub_checkbox_item"><input type="checkbox" value="frequency_penalty" /><span>frequency_penalty</span></label>
+                <label class="apihub_checkbox_item"><input type="checkbox" value="presence_penalty" /><span>presence_penalty</span></label>
+            </div>
+        </div>
+
+        <!-- Include body parameters -->
+        <div class="apihub_section">
+            <div class="apihub_label_row">
+                <label class="apihub_label apihub_sublabel">Additional Parameters</label>
+                <span id="apihub_btn_add_param" class="apihub_link">+ Add</span>
+            </div>
+            <small class="apihub_hint">Key-value pairs merged into the request body</small>
+            <div id="apihub_include_body" class="apihub_kv_list"></div>
+        </div>
+
+        <!-- Include headers -->
+        <div class="apihub_section">
+            <div class="apihub_label_row">
+                <label class="apihub_label apihub_sublabel">Custom Headers</label>
+                <span id="apihub_btn_add_header" class="apihub_link">+ Add</span>
+            </div>
+            <small class="apihub_hint">Key-value pairs merged into request headers</small>
+            <div id="apihub_include_headers" class="apihub_kv_list"></div>
+        </div>
+    </div>
 </div>
