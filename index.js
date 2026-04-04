@@ -397,11 +397,12 @@ function importConnections() {
 
 // ── Migration from native ST config ───────────────────────────────
 
-/** Map ST chat_completion_source values to our format */
+/** Map ST chat_completion_source / CM profile api values to our format */
 const SOURCE_TO_FORMAT = {
     [chat_completion_sources.CUSTOM]: 'openai',
     [chat_completion_sources.CLAUDE]: 'anthropic',
     [chat_completion_sources.MAKERSUITE]: 'gemini',
+    'google': 'gemini', // CM profiles store "google" for Google AI Studio
 };
 
 /**
@@ -415,10 +416,17 @@ const SOURCE_TO_FORMAT = {
  */
 async function migrateFromNative() {
     const migrated = [];
-    const existingKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}|${c.model}`));
+    // Primary dedup: format+endpoint+model for CM profiles (preserves same-endpoint different-model configs)
+    const cmKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}|${c.model}`));
+    // Secondary dedup: endpoint-only for active config & proxy presets (avoid duplicating CM results)
+    const endpointSet = new Set(getConnections().map(c => c.endpoint));
 
-    function isDuplicate(format, endpoint, model) {
-        return existingKeys.has(`${format}|${endpoint}|${model || ''}`);
+    function isCmDuplicate(format, endpoint, model) {
+        return cmKeys.has(`${format}|${endpoint}|${model || ''}`);
+    }
+
+    function isEndpointDuplicate(endpoint) {
+        return endpointSet.has(endpoint);
     }
 
     function makeConn(name, format, endpoint, apiKey, model) {
@@ -440,7 +448,8 @@ async function migrateFromNative() {
 
     function addConn(conn) {
         getConnections().push(conn);
-        existingKeys.add(`${conn.format}|${conn.endpoint}|${conn.model}`);
+        cmKeys.add(`${conn.format}|${conn.endpoint}|${conn.model}`);
+        endpointSet.add(conn.endpoint);
         migrated.push(conn);
     }
 
@@ -467,7 +476,7 @@ async function migrateFromNative() {
                 endpoint = getFormatOption(format).defaultEndpoint;
             }
 
-            if (isDuplicate(format, endpoint, profile.model)) continue;
+            if (isCmDuplicate(format, endpoint, profile.model)) continue;
 
             // Get API key from proxy password (findSecret requires allowKeysExposure)
             let apiKey = '';
@@ -504,7 +513,7 @@ async function migrateFromNative() {
         const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
         const activeModel = oai_settings[modelField] || '';
 
-        if (endpoint && !isDuplicate(activeFormat, endpoint, activeModel)) {
+        if (endpoint && !isCmDuplicate(activeFormat, endpoint, activeModel)) {
             // Get API key from proxy_password (can't use findSecret without allowKeysExposure)
             let apiKey = '';
             if (activeFormat !== 'openai' && oai_settings.proxy_password) {
@@ -536,7 +545,7 @@ async function migrateFromNative() {
         const url = proxy.url.trim();
         if (!url) continue;
         // Proxy presets don't carry format info — default to openai
-        if (isDuplicate('openai', url, '')) continue;
+        if (isEndpointDuplicate(url)) continue;
         addConn(makeConn(proxy.name, 'openai', url, proxy.password, ''));
     }
 
