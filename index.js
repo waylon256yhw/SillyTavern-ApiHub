@@ -456,33 +456,12 @@ function openNativeKeyManager(format) {
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
-    const data = {
-        apiHub: {
-            connections: getConnections().map(c => ({ ...c, apiKey: c.apiKey ? '***' : '' })),
-            activeConnectionId: getActiveConnectionId(),
-        },
-        // Debug: include native config for troubleshooting
-        native: {
-            chat_completion_source: oai_settings.chat_completion_source,
-            custom_url: oai_settings.custom_url,
-            custom_model: oai_settings.custom_model,
-            reverse_proxy: oai_settings.reverse_proxy,
-            claude_model: oai_settings.claude_model,
-            google_model: oai_settings.google_model,
-            proxies: proxies.map(p => ({ name: p.name, url: p.url, hasPassword: !!p.password })),
-            connectionManagerProfiles: (extension_settings?.connectionManager?.profiles || []).map(p => {
-                const clean = { ...p };
-                // Redact secret values but keep structure
-                if (clean['secret-id']) clean['secret-id'] = '***';
-                return clean;
-            }),
-        },
-    };
+    const data = getConnections().map(c => ({ ...c })); // full copy including apiKey
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `apihub-debug-${Date.now()}.json`;
+    a.download = `apihub-backup-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
 }
@@ -497,44 +476,79 @@ function importConnections() {
         try {
             const text = await file.text();
             const raw = JSON.parse(text);
-            // Support both formats: array (legacy) or {apiHub: {connections: [...]}} (new)
+            // Reject debug exports (they contain masked keys and native config)
+            if (raw?.native) {
+                toastr.warning('这是调试导出文件，不能用于导入。请使用"导出"生成的备份文件。');
+                return;
+            }
+            // Support: plain array or {apiHub: {connections: []}} (legacy)
             const data = Array.isArray(raw) ? raw : (raw?.apiHub?.connections || []);
             if (!Array.isArray(data) || data.length === 0) {
-                toastr.warning('Import failed: file contains no connections');
+                toastr.warning('导入失败：文件中没有连接配置');
                 return;
             }
             const validFormats = FORMAT_OPTIONS.map(f => f.value);
             let imported = 0;
             for (const c of data) {
-                // Validate required fields
-                if (!c.name || !c.format || !validFormats.includes(c.format)) {
-                    continue;
-                }
+                if (!c.name || !c.format || !validFormats.includes(c.format)) continue;
                 c.id = `conn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                 c.status = 'idle';
                 c.statusMessage = '';
                 c.apiKey = c.apiKey || '';
-                c.endpoint = c.endpoint || getFormatOption(c.format).defaultEndpoint;
-                c.model = c.model || getFormatOption(c.format).defaultModel;
-                c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [...getFormatOption(c.format).defaultModels];
+                c.endpoint = c.endpoint || '';
+                c.model = c.model || '';
+                c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [];
                 c.excludeBody = Array.isArray(c.excludeBody) ? c.excludeBody : [];
                 c.includeBody = Array.isArray(c.includeBody) ? c.includeBody : [];
                 c.includeHeaders = Array.isArray(c.includeHeaders) ? c.includeHeaders : [];
+                c.preset = c.preset || '';
+                c.regexPreset = c.regexPreset || '';
+                c.promptPostProcessing = c.promptPostProcessing || '';
                 getConnections().push(c);
                 imported++;
             }
             if (imported === 0) {
-                toastr.warning('Import failed: no valid connections found');
+                toastr.warning('导入失败：未找到有效的连接配置');
                 return;
             }
-            toastr.success(`Imported ${imported} connection(s)`);
+            toastr.success(`已导入 ${imported} 个连接配置`);
             saveSettingsDebounced();
             renderUI();
         } catch {
-            toastr.error('Import failed: invalid file');
+            toastr.error('导入失败：文件格式无效');
         }
     };
     input.click();
+}
+
+function exportDebug() {
+    const data = {
+        apiHub: {
+            connections: getConnections().map(c => ({ ...c, apiKey: c.apiKey ? '***' : '' })),
+            activeConnectionId: getActiveConnectionId(),
+        },
+        native: {
+            chat_completion_source: oai_settings.chat_completion_source,
+            custom_url: oai_settings.custom_url,
+            custom_model: oai_settings.custom_model,
+            reverse_proxy: oai_settings.reverse_proxy,
+            claude_model: oai_settings.claude_model,
+            google_model: oai_settings.google_model,
+            proxies: proxies.map(p => ({ name: p.name, url: p.url, hasPassword: !!p.password })),
+            connectionManagerProfiles: (extension_settings?.connectionManager?.profiles || []).map(p => {
+                const clean = { ...p };
+                if (clean['secret-id']) clean['secret-id'] = '***';
+                return clean;
+            }),
+        },
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `apihub-debug-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 // ── Migration from native ST config ───────────────────────────────
@@ -657,54 +671,7 @@ async function migrateFromNative() {
         }
     }
 
-    // Helper: extract host from URL for fuzzy endpoint comparison
-    function getUrlHost(url) {
-        try { return new URL(url).host; } catch { return url; }
-    }
-
-    // 2. Migrate active config if not already covered by profiles
-    const activeSource = oai_settings.chat_completion_source;
-    const activeFormat = SOURCE_TO_FORMAT[activeSource];
-    if (activeFormat) {
-        let endpoint;
-        if (activeFormat === 'openai') {
-            endpoint = (oai_settings.custom_url || '').trim();
-        } else {
-            endpoint = (oai_settings.reverse_proxy || '').trim() || getFormatOption(activeFormat).defaultEndpoint;
-        }
-
-        // Use host-based dedup: /v1 vs /v1beta on same host = same server
-        const activeHost = getUrlHost(endpoint);
-        const hostAlreadyExists = [...endpointSet].some(ep => getUrlHost(ep) === activeHost);
-
-        if (endpoint && !hostAlreadyExists) {
-            // Get API key from proxy_password (can't use findSecret without allowKeysExposure)
-            let apiKey = '';
-            if (activeFormat !== 'openai' && oai_settings.proxy_password) {
-                apiKey = oai_settings.proxy_password;
-            }
-
-            const modelField = { openai: 'custom_model', anthropic: 'claude_model', gemini: 'google_model' }[activeFormat];
-            const conn = makeConn(
-                `${getFormatOption(activeFormat).label} (active)`,
-                activeFormat,
-                endpoint,
-                apiKey,
-                oai_settings[modelField] || '',
-            );
-
-            // Migrate custom params for openai
-            if (activeFormat === 'openai') {
-                conn.excludeBody = parseYamlKeys(oai_settings.custom_exclude_body);
-                conn.includeBody = parseYamlKvPairs(oai_settings.custom_include_body);
-                conn.includeHeaders = parseYamlKvPairs(oai_settings.custom_include_headers);
-            }
-
-            addConn(conn);
-        }
-    }
-
-    // 3. Migrate proxy presets NOT already referenced by CM profiles
+    // 2. Migrate proxy presets NOT already referenced by CM profiles
     for (const proxy of proxies) {
         if (!proxy.url || proxy.name === 'None' || !proxy.name) continue;
         if (cmReferencedProxyNames.has(proxy.name)) continue; // already covered by CM
@@ -1154,6 +1121,7 @@ function bindEvents() {
     // Import/Export
     $('#apihub_btn_export').on('click', exportConnections);
     $('#apihub_btn_import').on('click', importConnections);
+    $('#apihub_btn_debug').on('click', exportDebug);
 
     // Reset all ApiHub data
     $('#apihub_btn_reset').on('click', async () => {
