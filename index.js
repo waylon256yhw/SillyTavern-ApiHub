@@ -218,6 +218,18 @@ async function activateConnection(id) {
     const targetSource = FORMAT_TO_SOURCE[conn.format];
     $('#chat_completion_source').val(targetSource).trigger('change');
 
+    // Re-apply model AFTER source switch (toggleChatCompletionForms may overwrite from native selects)
+    if (conn.format === 'openai') {
+        oai_settings.custom_model = conn.model;
+        $('#custom_model_id').val(conn.model);
+    } else if (conn.format === 'anthropic') {
+        oai_settings.claude_model = conn.model;
+        $('#model_claude_select').val(conn.model);
+    } else if (conn.format === 'gemini') {
+        oai_settings.google_model = conn.model;
+        $('#model_google_select').val(conn.model);
+    }
+
     // Write custom parameters as YAML strings
     oai_settings.custom_include_body = kvPairsToYaml(conn.includeBody);
     oai_settings.custom_exclude_body = excludeKeysToYaml(conn.excludeBody);
@@ -347,20 +359,6 @@ async function fetchModelsViaNativeConnect(conn) {
     }
 
     renderUI();
-}
-
-// ── Connection test ────────────────────────────────────────────────
-
-async function testConnection() {
-    const conn = getSelectedConnection();
-    if (!conn) return;
-
-    // Ensure this connection is activated so source/URL/key are set
-    await activateConnection(conn.id);
-
-    // Trigger the native test button — it sends a quiet "Hi" request
-    // and shows toastr success/error banners
-    $('#test_api_button').trigger('click');
 }
 
 // ── Native Secret Integration ─────────────────────────────────────
@@ -1000,8 +998,6 @@ function bindEvents() {
     });
 
     // Test connection
-    $('#apihub_btn_test').on('click', testConnection);
-
     // Open native key manager
     $('#apihub_btn_manage_keys').on('click', () => {
         const conn = getSelectedConnection();
