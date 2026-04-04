@@ -236,11 +236,12 @@ async function activateConnection(id) {
 
     getSettings().activeConnectionId = id;
 
-    // Write API key to backend secret storage
+    // Write API key to backend secret storage — only when key changes
     if (conn.apiKey) {
         const secretKey = FORMAT_TO_SECRET[conn.format];
-        if (secretKey) {
+        if (secretKey && conn.apiKey !== conn._lastWrittenKey) {
             await writeSecret(secretKey, conn.apiKey);
+            conn._lastWrittenKey = conn.apiKey;
         }
     }
 
@@ -373,7 +374,7 @@ async function fetchModels() {
 
             if (models.length > 0) {
                 updateConnection(conn.id, {
-                    availableModels: models,
+                    availableModels: [...new Set(models)],
                     status: 'connected',
                     statusMessage: `${models.length} models found`,
                 });
@@ -427,7 +428,7 @@ async function fetchModelsViaNativeConnect(conn) {
 
     if (googleModels.length > 0) {
         updateConnection(conn.id, {
-            availableModels: googleModels,
+            availableModels: [...new Set(googleModels)],
             status: 'connected',
             statusMessage: `${googleModels.length} models found`,
         });
@@ -458,7 +459,11 @@ function openNativeKeyManager(format) {
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
-    const data = getConnections().map(c => ({ ...c })); // full copy including apiKey
+    const data = getConnections().map(c => {
+        const clean = { ...c };
+        delete clean._lastWrittenKey; // runtime-only, don't persist
+        return clean;
+    });
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -763,7 +768,7 @@ function renderConnectionDetails() {
     $('#apihub_endpoint').val(conn.endpoint).attr('placeholder', fmt ? fmt.defaultEndpoint : 'https://...');
 
     // API key
-    $('#apihub_apikey').val(conn.apiKey);
+    $('#apihub_apikey').val(conn.apiKey).attr('placeholder', conn._lastWrittenKey ? '密钥已保存' : 'sk-...');
 
     // Model select
     renderModelList(conn);
@@ -901,6 +906,7 @@ function applyNativeUIVisibility() {
         $('#openai_reverse_proxy').closest('.inline-drawer').show();
         $('#ReverseProxyWarningMessage').show();
         $(sourceForms).show();
+        $('#customize_additional_parameters').show();
         $('#connection_profiles').closest('.wide100p').show();
         // Trigger toggleChatCompletionForms to show correct source form
         sourceSelect.trigger('change');
@@ -917,6 +923,7 @@ function applyNativeUIVisibility() {
         $('#openai_reverse_proxy').closest('.inline-drawer').hide();
         $('#ReverseProxyWarningMessage').hide();
         $(sourceForms).hide();
+        $('#customize_additional_parameters').hide();
         $('#connection_profiles').closest('.wide100p').hide();
     }
 }
@@ -924,6 +931,9 @@ function applyNativeUIVisibility() {
 function hideNativeUI() {
     nativeUIVisible = false;
     applyNativeUIVisibility();
+
+    // Hide "Additional Parameters" button (inside prompt_post_processing_form, has data-source="custom")
+    $('#customize_additional_parameters').hide();
 
     // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
     $(document).on('change', '#chat_completion_source', () => {
@@ -934,6 +944,7 @@ function hideNativeUI() {
             $('#openai_reverse_proxy').closest('.inline-drawer').hide();
             $('#ReverseProxyWarningMessage').hide();
             $(sourceForms).hide();
+            $('#customize_additional_parameters').hide();
         }
     });
 }
