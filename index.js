@@ -348,12 +348,6 @@ async function fetchModelsViaNativeConnect(conn) {
 
     renderUI();
 }
-    } catch (err) {
-        updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Fetch failed' });
-    }
-
-    renderUI();
-}
 
 // ── Connection test ────────────────────────────────────────────────
 
@@ -1180,14 +1174,17 @@ jQuery(async () => {
 
     // Render UI template
     const html = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    console.log('[ApiHub] Template loaded, length:', html?.length);
 
     // Inject into #openai_api at the top
     const container = document.getElementById('openai_api');
+    console.log('[ApiHub] #openai_api found:', !!container);
     if (!container) {
         console.warn('[ApiHub] #openai_api container not found');
         return;
     }
     container.insertAdjacentHTML('afterbegin', html);
+    console.log('[ApiHub] HTML injected, #apihub_container exists:', !!document.getElementById('apihub_container'));
 
     // Hide native Chat Completion Source UI
     hideNativeUI();
