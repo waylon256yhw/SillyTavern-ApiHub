@@ -874,8 +874,11 @@ function applyNativeUIVisibility() {
     } else {
         // Show ApiHub, hide native
         $('#apihub_container').children().show();
-        // Re-hide inline rows that should only show on button click
+        // Re-hide inline rows and collapsed panels that should only show on interaction
         $('#apihub_rename_row, #apihub_new_row, #apihub_add_model_row').hide();
+        if (!$('#apihub_params_toggle .apihub_collapse_icon').hasClass('open')) {
+            $('#apihub_params_panel').hide();
+        }
         sourceSelect.prevAll('h4').first().hide();
         sourceSelect.hide();
         $('#openai_reverse_proxy').closest('.inline-drawer').hide();

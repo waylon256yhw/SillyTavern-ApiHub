@@ -145,17 +145,17 @@
 
 /* URL Preview panel */
 .apihub_preview {
-    border: 1px dashed var(--SmartThemeBorderColor);
+    border: 1px dashed color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
     border-radius: 6px;
-    padding: 8px 10px;
+    padding: 6px 10px;
     gap: 6px;
 }
 
 .apihub_preview_url {
     font-family: var(--monoFontFamily, 'Courier New', monospace);
-    font-size: calc(var(--mainFontSize) * 0.78);
+    font-size: calc(var(--mainFontSize) * 0.72);
     color: var(--SmartThemeBodyColor);
-    opacity: 0.8;
+    opacity: 0.45;
     word-break: break-all;
     line-height: 1.5;
 }
