@@ -237,24 +237,26 @@ async function fetchModels() {
     renderStatus(conn);
 
     try {
-        // Gemini with official Google endpoint: use native flow
-        // Gemini with custom proxy: use CUSTOM source (proxy supports OpenAI /models)
-        const isOfficialGemini = conn.format === 'gemini' &&
-            conn.endpoint.includes('googleapis.com');
+        // Official endpoints use native ST flow; all others use CUSTOM source GET /v1/models
+        const officialHosts = {
+            openai: 'api.openai.com',
+            anthropic: 'api.anthropic.com',
+            gemini: 'googleapis.com',
+        };
+        const isOfficial = conn.endpoint.includes(officialHosts[conn.format] || '');
 
-        if (isOfficialGemini) {
+        if (isOfficial) {
             await activateConnection(conn.id);
             await fetchModelsViaNativeConnect(conn);
             return;
         }
 
-        // OpenAI / Anthropic / Gemini proxies: direct backend call with CUSTOM source
-        const { normalized } = normalizeUrl(conn.endpoint, conn.format);
+        // Non-official endpoints: direct backend call with CUSTOM source (GET /models + Bearer)
+        const { normalized } = normalizeUrl(conn.endpoint, 'openai'); // always normalize as openai for /v1/models
 
-        // Write API key to the correct secret slot
-        const secretKey = FORMAT_TO_SECRET[conn.format];
-        if (conn.apiKey && secretKey) {
-            await writeSecret(secretKey, conn.apiKey);
+        // Write API key to CUSTOM secret slot for this request
+        if (conn.apiKey) {
+            await writeSecret(SECRET_KEYS.CUSTOM, conn.apiKey);
         }
 
         const body = {
@@ -768,8 +770,6 @@ function renderUrlPreview() {
 
     $('#apihub_preview_chat_method').text(preview.chatMethod);
     $('#apihub_preview_chat_url').text(preview.chatUrl);
-    $('#apihub_preview_models_method').text(preview.modelsMethod);
-    $('#apihub_preview_models_url').text(preview.modelsUrl);
 
     if (preview.literal) {
         $('#apihub_preview_literal').show();
