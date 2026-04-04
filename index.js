@@ -299,6 +299,18 @@ async function testConnection() {
 
 // ── Native Secret Integration ─────────────────────────────────────
 
+/**
+ * Open ST's native key manager dialog for the current connection's format.
+ */
+function openNativeKeyManager(format) {
+    const secretKey = FORMAT_TO_SECRET[format];
+    if (!secretKey) return;
+    const btn = $(`<div class="manage-api-keys" data-key="${secretKey}" style="display:none;"></div>`);
+    $('body').append(btn);
+    btn.trigger('click');
+    btn.remove();
+}
+
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
@@ -728,25 +740,21 @@ function hideNativeUI() {
     $('#openai_reverse_proxy').closest('.inline-drawer').hide();
     $('#ReverseProxyWarningMessage').hide();
 
-    // Hide custom source URL and model inputs (we manage these)
-    $('#custom_api_url_text').closest('.range-block').hide();
-    $('#custom_model_id').closest('.range-block').hide();
-    $('#customize_additional_parameters').hide();
+    // Hide all native source forms (API key + model — we manage both)
+    // They use data-source attributes and get re-shown by toggleChatCompletionForms
+    const sourceForms = '#openai_form, #claude_form, #makersuite_form, #custom_form';
+    $(sourceForms).hide();
 
     // Hide Connection Manager UI at top of #rm_api_block
     $('#connection_profiles').closest('.wide100p').hide();
 
-    // Native source forms (API key inputs) remain visible — managed by toggleChatCompletionForms
-
-    // Re-apply after source changes
+    // Re-apply after source changes (toggleChatCompletionForms re-shows data-source elements)
     $(document).on('change', '#chat_completion_source', () => {
         sourceSelect.prevAll('h4').first().hide();
         sourceSelect.hide();
         $('#openai_reverse_proxy').closest('.inline-drawer').hide();
         $('#ReverseProxyWarningMessage').hide();
-        $('#custom_api_url_text').closest('.range-block').hide();
-        $('#custom_model_id').closest('.range-block').hide();
-        $('#customize_additional_parameters').hide();
+        $(sourceForms).hide();
     });
 }
 
@@ -888,6 +896,13 @@ function bindEvents() {
 
     // Test connection
     $('#apihub_btn_test').on('click', testConnection);
+
+    // Open native key manager
+    $('#apihub_btn_manage_keys').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        openNativeKeyManager(conn.format);
+    });
 
     // Import/Export
     $('#apihub_btn_export').on('click', exportConnections);
