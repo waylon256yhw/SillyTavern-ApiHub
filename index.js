@@ -237,40 +237,28 @@ async function fetchModels() {
     renderStatus(conn);
 
     try {
+        // Gemini: use native flow (activate + trigger Connect button)
+        // ST's makersuite backend handles the /models?key= URL construction correctly
+        if (conn.format === 'gemini') {
+            await activateConnection(conn.id);
+            await fetchModelsViaNativeConnect(conn);
+            return;
+        }
+
+        // OpenAI / Anthropic: direct backend call with CUSTOM source
         const { normalized } = normalizeUrl(conn.endpoint, conn.format);
 
-        // Write API key to the correct secret slot for this format
+        // Write API key to the correct secret slot
         const secretKey = FORMAT_TO_SECRET[conn.format];
         if (conn.apiKey && secretKey) {
             await writeSecret(secretKey, conn.apiKey);
         }
 
-        // Build request body based on format — each uses a different ST backend path
-        let body;
-        if (conn.format === 'gemini') {
-            // MAKERSUITE branch: builds /{apiVersion}/models?key=...
-            body = {
-                chat_completion_source: chat_completion_sources.MAKERSUITE,
-                reverse_proxy: normalized,
-                proxy_password: conn.apiKey,
-            };
-        } else if (conn.format === 'anthropic') {
-            // Claude source is in noValidateSources — ST skips it.
-            // Use CUSTOM source as workaround: GET {url}/models with Bearer auth
-            // Works for most Anthropic proxies (Clewdr, etc.)
-            body = {
-                chat_completion_source: chat_completion_sources.CUSTOM,
-                custom_url: normalized,
-                custom_include_headers: kvPairsToYaml(conn.includeHeaders),
-            };
-        } else {
-            // OpenAI compatible: CUSTOM source with Bearer auth
-            body = {
-                chat_completion_source: chat_completion_sources.CUSTOM,
-                custom_url: normalized,
-                custom_include_headers: kvPairsToYaml(conn.includeHeaders),
-            };
-        }
+        const body = {
+            chat_completion_source: chat_completion_sources.CUSTOM,
+            custom_url: normalized,
+            custom_include_headers: kvPairsToYaml(conn.includeHeaders),
+        };
 
         const response = await fetch('/api/backends/chat-completions/status', {
             method: 'POST',
@@ -301,6 +289,59 @@ async function fetchModels() {
             const errText = await response.text().catch(() => '');
             updateConnection(conn.id, { status: 'error', statusMessage: `Fetch failed: ${response.status} ${errText.slice(0, 100)}` });
         }
+    } catch (err) {
+        updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Fetch failed' });
+    }
+
+    renderUI();
+}
+
+/**
+ * Fetch models via ST's native Connect button flow.
+ * Used for Gemini (makersuite) which has special URL construction in the backend.
+ */
+async function fetchModelsViaNativeConnect(conn) {
+    // Trigger the native Connect button
+    $('#api_button_openai').trigger('click');
+
+    // Poll for online status change (ST updates #online_status_text)
+    let waited = 0;
+    const interval = 300;
+    const timeout = 15000;
+
+    await new Promise((resolve) => {
+        const check = () => {
+            waited += interval;
+            const statusText = $('#online_status_text').text();
+            if ((statusText && !statusText.includes('No connection') && !statusText.includes('...')) || waited >= timeout) {
+                resolve();
+                return;
+            }
+            setTimeout(check, interval);
+        };
+        setTimeout(check, interval);
+    });
+
+    // Check the model select that ST populates for makersuite
+    const googleModels = $('#model_google_select option').map(function () {
+        return $(this).val();
+    }).get().filter(Boolean);
+
+    if (googleModels.length > 0) {
+        updateConnection(conn.id, {
+            availableModels: googleModels,
+            status: 'connected',
+            statusMessage: `${googleModels.length} models found`,
+        });
+        if (!googleModels.includes(conn.model)) {
+            updateConnection(conn.id, { model: googleModels[0] });
+        }
+    } else {
+        updateConnection(conn.id, { status: 'error', statusMessage: 'No models returned' });
+    }
+
+    renderUI();
+}
     } catch (err) {
         updateConnection(conn.id, { status: 'error', statusMessage: err.message || 'Fetch failed' });
     }
