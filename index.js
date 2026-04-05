@@ -14,7 +14,7 @@ import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.j
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
 import { SlashCommandAbortController } from '../../../slash-commands/SlashCommandAbortController.js';
 import { SlashCommandDebugController } from '../../../slash-commands/SlashCommandDebugController.js';
-import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption } from './url-utils.js';
+import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, DEFAULT_MODELS } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -1106,6 +1106,24 @@ function bindEvents() {
 
     // Fetch models
     $('#apihub_btn_fetch_models').on('click', fetchModels);
+
+    // Default models — reset to hardcoded list
+    $('#apihub_btn_default_models').on('click', () => {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        const defaults = DEFAULT_MODELS[conn.format] || [];
+        const fmt = getFormatOption(conn.format);
+        const newModel = (fmt && defaults.includes(fmt.defaultModel) ? fmt.defaultModel : defaults[0]) || '';
+        updateConnection(conn.id, { availableModels: [...defaults], model: newModel });
+        syncModelToNative(conn);
+        renderModelList(conn);
+        renderUrlPreview();
+        if (defaults.length > 0) {
+            toastr.success(`已重置为 ${defaults.length} 个默认模型`);
+        } else {
+            toastr.info('该格式无默认模型列表，已清空');
+        }
+    });
 
     // Add model manually
     $('#apihub_btn_add_model').on('click', () => {

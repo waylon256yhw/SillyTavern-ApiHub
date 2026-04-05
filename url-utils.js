@@ -13,6 +13,42 @@ export const PROVIDER_VERSION = {
 /** Known version segments to detect and replace */
 const KNOWN_VERSIONS = new Set(['v1', 'v1beta', 'v2', 'v3']);
 
+/** Hardcoded default model lists per native format (used by "Default" reset) */
+export const DEFAULT_MODELS = {
+    openai: [],
+    anthropic: [
+        // Opus
+        'claude-opus-4-6',
+        'claude-opus-4-5-20251101',
+        'claude-opus-4-1-20250805',
+        'claude-opus-4-20250514',
+        // Sonnet
+        'claude-sonnet-4-6',
+        'claude-sonnet-4-5-20250929',
+        'claude-sonnet-4-20250514',
+        // Haiku
+        'claude-haiku-4-5-20251001',
+        'claude-haiku-3-5-20241022',
+    ],
+    gemini: [
+        // Gemini 3.1
+        'gemini-3.1-pro-preview',
+        'gemini-3.1-flash-lite-preview',
+        // Gemini 3.0
+        'gemini-3-pro-preview',
+        'gemini-3-flash-preview',
+        // Gemini 2.5
+        'gemini-2.5-pro',
+        'gemini-2.5-pro-preview-06-05',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-flash-lite-preview-06-17',
+        // Gemini 2.0
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-lite',
+    ],
+};
+
 /** Protocol format options with defaults */
 export const FORMAT_OPTIONS = [
     {
@@ -26,15 +62,15 @@ export const FORMAT_OPTIONS = [
         value: 'anthropic',
         label: 'Anthropic',
         defaultEndpoint: 'https://api.anthropic.com',
-        defaultModel: 'claude-sonnet-4-20250514',
-        defaultModels: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-20250506'],
+        defaultModel: 'claude-opus-4-6',
+        defaultModels: DEFAULT_MODELS.anthropic,
     },
     {
         value: 'gemini',
         label: 'Google Gemini',
         defaultEndpoint: 'https://generativelanguage.googleapis.com',
-        defaultModel: 'gemini-2.5-flash',
-        defaultModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+        defaultModel: 'gemini-3.1-pro-preview',
+        defaultModels: DEFAULT_MODELS.gemini,
     },
 ];
 
