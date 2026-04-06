@@ -349,6 +349,21 @@ async function findReusableEmptySecret(secretKey) {
     return null;
 }
 
+async function findSecretEntryByValue(secretKey, desiredValue) {
+    if (!secretKey) return null;
+    const secrets = secret_state[secretKey];
+    if (!Array.isArray(secrets)) return null;
+
+    for (const secret of secrets) {
+        const value = await readSecretValue(secretKey, secret.id);
+        if (value === desiredValue) {
+            return secret;
+        }
+    }
+
+    return null;
+}
+
 async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhenMissing = true, activateIfActive = false } = {}) {
     const conn = getConnection(connectionId);
     if (!conn) return false;
@@ -466,6 +481,20 @@ async function syncNativeSecretSlot(conn) {
             await writeSecret(secretKey, '', EMPTY_SECRET_LABEL, { allowEmpty: true });
         }
         syncedSecretValues.set(secretKey, '');
+        return;
+    }
+
+    const reusableSecret = await findSecretEntryByValue(secretKey, desiredValue);
+    if (reusableSecret) {
+        if (activeSecret?.id !== reusableSecret.id) {
+            await rotateSecret(secretKey, reusableSecret.id);
+        }
+
+        updateConnection(conn.id, {
+            secretId: reusableSecret.id,
+            apiKey: '',
+        });
+        syncedSecretValues.set(secretKey, desiredValue);
         return;
     }
 
