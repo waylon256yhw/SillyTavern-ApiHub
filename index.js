@@ -955,9 +955,8 @@ async function migrateFromNative() {
     const skippedSecretBindings = [];
     const dedupeKeys = new Set(getConnections().map(c => getConnectionIdentityKey(c)));
 
-    function getCredentialIdentity({ secretId = '', proxyName = '', apiKey = '' } = {}) {
+    function getCredentialIdentity({ secretId = '', apiKey = '' } = {}) {
         if (secretId) return `secret:${secretId}`;
-        if (proxyName) return `proxy:${proxyName}`;
         if (apiKey) return `manual:${apiKey}`;
         return 'manual:';
     }
@@ -1042,7 +1041,6 @@ async function migrateFromNative() {
 
             const identity = getCredentialIdentity({
                 secretId: profile['secret-id'],
-                proxyName: profile.proxy,
                 apiKey,
             });
             if (isDuplicate(format, endpoint, identity)) continue;
@@ -1090,7 +1088,7 @@ async function migrateFromNative() {
         if (cmReferencedProxyNames.has(proxy.name)) continue; // already covered by CM
         const url = proxy.url.trim();
         if (!url) continue;
-        if (isDuplicate('openai', url, getCredentialIdentity({ proxyName: proxy.name, apiKey: proxy.password }))) continue;
+        if (isDuplicate('openai', url, getCredentialIdentity({ apiKey: proxy.password }))) continue;
         addConn(makeConn(proxy.name, 'openai', url, proxy.password, ''));
     }
 
