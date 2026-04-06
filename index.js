@@ -1340,18 +1340,33 @@ function enhanceSecretManager(manager) {
     renderSecretManagerItems(manager);
 }
 
-function initSecretManagerPatch() {
-    const enhanceAll = () => {
-        $('dialog .secretKeyManager').each(function () {
-            enhanceSecretManager($(this));
-        });
-    };
+function refreshOpenSecretManagers(secretKey = '') {
+    $('dialog .secretKeyManager').each(function () {
+        const manager = $(this);
+        if (secretKey && getSecretManagerKey(manager) !== secretKey) return;
+        enhanceSecretManager(manager);
+    });
+}
 
-    enhanceAll();
+function initSecretManagerPatch() {
+    refreshOpenSecretManagers();
     if (secretManagerObserver) return;
 
-    secretManagerObserver = new MutationObserver(() => {
-        enhanceAll();
+    secretManagerObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (!(node instanceof Element)) continue;
+
+                if (node.matches('.secretKeyManager')) {
+                    enhanceSecretManager($(node));
+                    continue;
+                }
+
+                const managers = node.querySelectorAll?.('.secretKeyManager');
+                if (!managers?.length) continue;
+                managers.forEach(manager => enhanceSecretManager($(manager)));
+            }
+        }
     });
     secretManagerObserver.observe(document.body, { childList: true, subtree: true });
 }
@@ -2176,6 +2191,7 @@ jQuery(async () => {
     [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED, event_types.SECRET_DELETED, event_types.SECRET_EDITED].forEach(eventName => {
         eventSource.on(eventName, async (key) => {
             clearSecretCachesForKey(key);
+            refreshOpenSecretManagers(key);
 
             if (pendingSecretBinding && pendingSecretBinding.expiresAt < Date.now()) {
                 pendingSecretBinding = null;
