@@ -1186,15 +1186,36 @@ async function importSecretsIntoManager(manager) {
             }
 
             let imported = 0;
+            let reused = 0;
             let activeImportedId = '';
+            const selectedIds = new Set();
+            const existingByValue = new Map();
+            const existingSecrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
+            for (const existingSecret of existingSecrets) {
+                const { value } = await readSecretValue(secretKey, existingSecret.id);
+                if (value !== null && !existingByValue.has(value)) {
+                    existingByValue.set(value, existingSecret.id);
+                }
+            }
 
             for (const secret of secrets) {
                 const value = typeof secret?.value === 'string' ? secret.value : null;
                 if (value === null) continue;
                 const label = typeof secret?.label === 'string' ? secret.label.trim() : '';
+                const existingId = existingByValue.get(value);
+                if (existingId) {
+                    reused++;
+                    selectedIds.add(existingId);
+                    if (secret.active) {
+                        activeImportedId = existingId;
+                    }
+                    continue;
+                }
                 const id = await writeSecret(secretKey, value, label, { allowEmpty: true });
                 if (id) {
                     imported++;
+                    existingByValue.set(value, id);
+                    selectedIds.add(id);
                     if (secret.active) {
                         activeImportedId = id;
                     }
@@ -1205,15 +1226,17 @@ async function importSecretsIntoManager(manager) {
                 await rotateSecret(secretKey, activeImportedId);
             }
 
-            if (imported > 0) {
+            if (imported > 0 || reused > 0) {
                 const selection = getBulkSelectionForKey(secretKey);
                 selection.clear();
-                const latestSecrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
-                for (const secret of latestSecrets) {
-                    selection.add(secret.id);
+                for (const id of selectedIds) {
+                    selection.add(id);
                 }
                 renderSecretManagerItems(manager);
-                toastr.success(`已导入 ${imported} 个密钥`);
+                const message = reused > 0
+                    ? `已导入 ${imported} 个密钥，复用 ${reused} 个已有密钥`
+                    : `已导入 ${imported} 个密钥`;
+                toastr.success(message);
             } else {
                 toastr.warning('导入失败：没有有效密钥条目');
             }
