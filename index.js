@@ -451,14 +451,23 @@ async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhen
     return true;
 }
 
+function getFallbackApiKeyAfterMissingBinding(conn) {
+    if (requiresReadableSecretValue(conn.format) && conn.apiKey) {
+        return conn.apiKey;
+    }
+
+    return '';
+}
+
 async function resolveConnectionApiKey(conn) {
     const secretKey = getSecretKeyForFormat(conn.format);
 
     if (conn.secretId) {
         const secretEntry = getSecretEntry(secretKey, conn.secretId);
         if (!secretEntry) {
-            updateConnection(conn.id, { secretId: '', apiKey: '' });
-            return { apiKey: '', readStatus: 404 };
+            const fallbackApiKey = getFallbackApiKeyAfterMissingBinding(conn);
+            updateConnection(conn.id, { secretId: '', apiKey: fallbackApiKey });
+            return { apiKey: fallbackApiKey, readStatus: 404 };
         } else {
             const { value: secretValue, status } = await readSecretValue(secretKey, conn.secretId);
             if (secretValue !== null) {
@@ -479,7 +488,10 @@ async function syncNativeSecretSlot(conn) {
         const activeSecret = getActiveSecretEntry(secretKey);
         const boundSecret = getSecretEntry(secretKey, conn.secretId);
         if (!boundSecret) {
-            updateConnection(conn.id, { secretId: '', apiKey: '' });
+            updateConnection(conn.id, {
+                secretId: '',
+                apiKey: getFallbackApiKeyAfterMissingBinding(conn),
+            });
             syncedSecretValues.delete(secretKey);
             return;
         }
@@ -1365,8 +1377,10 @@ function bindEvents() {
         const conn = getSelectedConnection();
         if (!conn) return;
         const format = $(this).val();
+        const { apiKey: runtimeApiKey } = await resolveConnectionApiKey(conn);
         updateConnection(conn.id, {
             format,
+            apiKey: runtimeApiKey || '',
             secretId: '',
             model: '',
             availableModels: [],
