@@ -7,8 +7,8 @@
 
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, chat_completion_sources, proxies } from '../../../openai.js';
-import { saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret } from '../../../secrets.js';
+import { saveSettingsDebounced, getRequestHeaders, eventSource, event_types } from '../../../../script.js';
+import { SECRET_KEYS, writeSecret, findSecret, rotateSecret, secret_state } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
@@ -38,6 +38,16 @@ const FORMAT_TO_SECRET = {
     anthropic: SECRET_KEYS.CLAUDE,
     gemini: SECRET_KEYS.MAKERSUITE,
 };
+
+const EMPTY_SECRET_LABEL = 'ApiHub Empty';
+
+// Cache the last value we know was synced to each native secret slot.
+// This avoids creating duplicate secret entries on every activation.
+const syncedSecretValues = new Map();
+const secretValueCache = new Map();
+const SECRET_BINDING_WINDOW_MS = 120000;
+let pendingSecretBinding = null;
+let pendingSecretBindingToken = 0;
 
 // ── Settings helpers ───────────────────────────────────────────────
 
@@ -69,6 +79,91 @@ function getSelectedConnection() {
     return getConnection(getSelectedConnectionId());
 }
 
+function getSecretKeyForFormat(format) {
+    return FORMAT_TO_SECRET[format];
+}
+
+function getActiveSecretEntry(secretKey) {
+    const secrets = secret_state[secretKey];
+    if (!Array.isArray(secrets)) return null;
+    return secrets.find(secret => secret.active) || null;
+}
+
+function getActiveSecretLabel(secretKey) {
+    return getActiveSecretEntry(secretKey)?.label || '';
+}
+
+function getSecretEntry(secretKey, secretId) {
+    if (!secretId) return null;
+    const secrets = secret_state[secretKey];
+    if (!Array.isArray(secrets)) return null;
+    return secrets.find(secret => secret.id === secretId) || null;
+}
+
+function getConnectionBoundSecretLabel(conn) {
+    const secretKey = getSecretKeyForFormat(conn.format);
+    return getSecretEntry(secretKey, conn.secretId)?.label || '';
+}
+
+function requiresReadableSecretValue(format) {
+    return format === 'anthropic' || format === 'gemini';
+}
+
+function getSecretValueCacheKey(secretKey, secretId) {
+    return `${secretKey}:${secretId}`;
+}
+
+function clearSecretCachesForKey(secretKey) {
+    syncedSecretValues.delete(secretKey);
+    for (const cacheKey of secretValueCache.keys()) {
+        if (cacheKey.startsWith(`${secretKey}:`)) {
+            secretValueCache.delete(cacheKey);
+        }
+    }
+}
+
+function countOpenDialogs() {
+    return document.querySelectorAll('dialog[open]:not([closing])').length;
+}
+
+function startPendingSecretBinding(connectionId, secretKey) {
+    const token = ++pendingSecretBindingToken;
+    const baselineOpenDialogs = countOpenDialogs();
+    pendingSecretBinding = {
+        token,
+        connectionId,
+        secretKey,
+        baselineOpenDialogs,
+        sawDialog: false,
+        expiresAt: Date.now() + SECRET_BINDING_WINDOW_MS,
+    };
+
+    const poll = () => {
+        if (!pendingSecretBinding || pendingSecretBinding.token !== token) {
+            return;
+        }
+
+        const openDialogs = countOpenDialogs();
+        if (openDialogs > baselineOpenDialogs) {
+            pendingSecretBinding.sawDialog = true;
+        }
+
+        if (pendingSecretBinding.sawDialog && openDialogs <= baselineOpenDialogs) {
+            pendingSecretBinding = null;
+            return;
+        }
+
+        if (Date.now() >= pendingSecretBinding.expiresAt) {
+            pendingSecretBinding = null;
+            return;
+        }
+
+        window.setTimeout(poll, 250);
+    };
+
+    window.setTimeout(poll, 0);
+}
+
 // ── Connection CRUD ────────────────────────────────────────────────
 
 async function createConnection(name, format) {
@@ -81,6 +176,7 @@ async function createConnection(name, format) {
         format: fmt.value,
         endpoint: '',
         apiKey: '',
+        secretId: '',
         model: '',
         availableModels: [],
         excludeBody: [],          // string[] — parameter names to exclude
@@ -109,6 +205,7 @@ function createPresetConnection(name, format) {
         format: fmt.value,
         endpoint: fmt.defaultEndpoint,
         apiKey: '',
+        secretId: '',
         model: fmt.defaultModel,
         availableModels: [...fmt.defaultModels],
         excludeBody: [],
@@ -223,6 +320,169 @@ async function readCurrentPresets() {
     return { preset, regexPreset, promptPostProcessing };
 }
 
+async function readSecretValue(secretKey, secretId) {
+    if (!secretKey || !secretId) return null;
+    const cacheKey = getSecretValueCacheKey(secretKey, secretId);
+    if (secretValueCache.has(cacheKey)) {
+        return secretValueCache.get(cacheKey);
+    }
+
+    const value = await findSecret(secretKey, secretId);
+    if (value !== null) {
+        secretValueCache.set(cacheKey, value);
+    }
+    return value;
+}
+
+async function findReusableEmptySecret(secretKey) {
+    const secrets = secret_state[secretKey];
+    if (!Array.isArray(secrets)) return null;
+
+    const candidates = secrets.filter(secret => secret.label === EMPTY_SECRET_LABEL);
+    for (const secret of candidates) {
+        const value = await readSecretValue(secretKey, secret.id);
+        if (value === '') {
+            return secret;
+        }
+    }
+
+    return null;
+}
+
+async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhenMissing = true, activateIfActive = false } = {}) {
+    const conn = getConnection(connectionId);
+    if (!conn) return false;
+
+    const activeSecret = getActiveSecretEntry(secretKey);
+    if (!activeSecret) {
+        if (clearWhenMissing) {
+            updateConnection(connectionId, { secretId: '' });
+            if (getSelectedConnectionId() === connectionId) {
+                renderConnectionDetails();
+            }
+        }
+        return false;
+    }
+
+    const secretValue = await readSecretValue(secretKey, activeSecret.id);
+
+    if (secretValue === null && requiresReadableSecretValue(conn.format)) {
+        toastr.warning('该格式绑定原生密钥库后仍需读取密钥值。请在 config.yaml 中启用 allowKeysExposure。');
+        return false;
+    }
+
+    const nextApiKey = secretValue !== null ? secretValue : '';
+    if (conn.secretId === activeSecret.id && (secretValue === null || conn.apiKey === nextApiKey)) {
+        if (activateIfActive && getActiveConnectionId() === connectionId) {
+            await activateConnection(connectionId);
+        } else if (getSelectedConnectionId() === connectionId) {
+            renderConnectionDetails();
+        }
+        return true;
+    }
+
+    const partial = {
+        secretId: activeSecret.id,
+        apiKey: nextApiKey,
+    };
+
+    if (secretValue === null && conn.secretId && conn.secretId !== activeSecret.id) {
+        // OpenAI-compatible bindings can work without exposing the secret value.
+        // Clear stale manual key so the connection follows the native slot only.
+        partial.apiKey = '';
+    }
+
+    updateConnection(connectionId, partial);
+    if (activateIfActive && getActiveConnectionId() === connectionId) {
+        await activateConnection(connectionId);
+    } else if (getSelectedConnectionId() === connectionId) {
+        renderConnectionDetails();
+    }
+    return true;
+}
+
+async function resolveConnectionApiKey(conn) {
+    const secretKey = getSecretKeyForFormat(conn.format);
+
+    if (conn.secretId) {
+        const secretEntry = getSecretEntry(secretKey, conn.secretId);
+        if (!secretEntry) {
+            updateConnection(conn.id, { secretId: '', apiKey: '' });
+            return '';
+        } else {
+            const secretValue = await readSecretValue(secretKey, conn.secretId);
+            if (secretValue !== null) {
+                return secretValue;
+            }
+            return null;
+        }
+    }
+
+    return conn.apiKey || '';
+}
+
+async function syncNativeSecretSlot(conn) {
+    const secretKey = getSecretKeyForFormat(conn.format);
+    if (!secretKey) return;
+
+    if (conn.secretId) {
+        const activeSecret = getActiveSecretEntry(secretKey);
+        const boundSecret = getSecretEntry(secretKey, conn.secretId);
+        if (!boundSecret) {
+            updateConnection(conn.id, { secretId: '', apiKey: '' });
+            syncedSecretValues.delete(secretKey);
+            return;
+        }
+
+        if (activeSecret?.id !== conn.secretId) {
+            await rotateSecret(secretKey, conn.secretId);
+        }
+
+        syncedSecretValues.delete(secretKey);
+        return;
+    }
+
+    const desiredValue = conn.apiKey || '';
+    const activeSecret = getActiveSecretEntry(secretKey);
+    const cachedValue = syncedSecretValues.get(secretKey);
+
+    if (!desiredValue) {
+        const activeValue = await findSecret(secretKey);
+        if (activeValue === '') {
+            syncedSecretValues.set(secretKey, '');
+            return;
+        }
+
+        const reusableEmptySecret = await findReusableEmptySecret(secretKey);
+        if (reusableEmptySecret) {
+            if (activeSecret?.id !== reusableEmptySecret.id) {
+                await rotateSecret(secretKey, reusableEmptySecret.id);
+            }
+            syncedSecretValues.set(secretKey, '');
+            return;
+        }
+
+        if (activeSecret || cachedValue) {
+            await writeSecret(secretKey, '', EMPTY_SECRET_LABEL, { allowEmpty: true });
+        }
+        syncedSecretValues.set(secretKey, '');
+        return;
+    }
+
+    if (cachedValue === desiredValue && activeSecret) {
+        return;
+    }
+
+    const activeValue = await findSecret(secretKey);
+    if (activeValue !== null && activeValue === desiredValue) {
+        syncedSecretValues.set(secretKey, desiredValue);
+        return;
+    }
+
+    await writeSecret(secretKey, desiredValue);
+    syncedSecretValues.set(secretKey, desiredValue);
+}
+
 // ── Core: Activate Connection → sync to oai_settings ───────────────
 
 async function activateConnection(id) {
@@ -231,14 +491,9 @@ async function activateConnection(id) {
 
     getSettings().activeConnectionId = id;
 
-    // Write API key to backend secret storage — only when key changes
-    if (conn.apiKey) {
-        const secretKey = FORMAT_TO_SECRET[conn.format];
-        if (secretKey && conn.apiKey !== conn._lastWrittenKey) {
-            await writeSecret(secretKey, conn.apiKey);
-            conn._lastWrittenKey = conn.apiKey;
-        }
-    }
+    // Keep the native secret slot aligned with the currently selected connection.
+    await syncNativeSecretSlot(conn);
+    const runtimeApiKey = await resolveConnectionApiKey(conn);
 
     // Apply preset FIRST (before connection fields) — preset may overwrite oai_settings
     // when bind_preset_to_connection is enabled. We reapply our fields after.
@@ -252,13 +507,13 @@ async function activateConnection(id) {
         oai_settings.custom_model = conn.model;
     } else if (conn.format === 'anthropic') {
         oai_settings.reverse_proxy = normalized;
-        oai_settings.proxy_password = conn.apiKey;
+        oai_settings.proxy_password = runtimeApiKey || '';
         oai_settings.claude_model = conn.model;
     } else if (conn.format === 'gemini') {
         // Don't use normalizeUrl for gemini reverse_proxy — ST's makersuite backend
         // adds its own /{apiVersion}/ path, so we must pass the raw base URL
         oai_settings.reverse_proxy = conn.endpoint.replace(/\/+$/, '');
-        oai_settings.proxy_password = conn.apiKey;
+        oai_settings.proxy_password = runtimeApiKey || '';
         oai_settings.google_model = conn.model;
     }
 
@@ -370,9 +625,20 @@ async function fetchModels() {
         // Non-official endpoints: direct backend call with CUSTOM source (GET /models + Bearer)
         const { normalized } = normalizeUrl(conn.endpoint, 'openai'); // always normalize as openai for /v1/models
 
-        // Write API key to CUSTOM secret slot for this request
-        if (conn.apiKey) {
-            await writeSecret(SECRET_KEYS.CUSTOM, conn.apiKey);
+        const usesBoundOpenAiSecret = conn.format === 'openai' && !!conn.secretId;
+        if (usesBoundOpenAiSecret) {
+            await syncNativeSecretSlot(conn);
+        } else {
+            // Write API key to CUSTOM secret slot for this request
+            const runtimeApiKey = await resolveConnectionApiKey(conn);
+            if (runtimeApiKey) {
+                await writeSecret(SECRET_KEYS.CUSTOM, runtimeApiKey);
+            } else if (conn.secretId) {
+                toastr.warning('无法读取绑定的密钥值。请在 config.yaml 中启用 allowKeysExposure，或改用手动输入。');
+                cleanup();
+                renderUI();
+                return;
+            }
         }
 
         const body = {
@@ -475,7 +741,7 @@ async function fetchModelsViaNativeConnect(conn) {
  * Open ST's native key manager dialog for the current connection's format.
  */
 function openNativeKeyManager(format) {
-    const secretKey = FORMAT_TO_SECRET[format];
+    const secretKey = getSecretKeyForFormat(format);
     if (!secretKey) return;
     const btn = $(`<div class="manage-api-keys" data-key="${secretKey}" style="display:none;"></div>`);
     $('body').append(btn);
@@ -488,7 +754,6 @@ function openNativeKeyManager(format) {
 function exportConnections() {
     const data = getConnections().map(c => {
         const clean = { ...c };
-        delete clean._lastWrittenKey; // runtime-only, don't persist
         return clean;
     });
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -529,6 +794,7 @@ function importConnections() {
                 c.status = 'idle';
                 c.statusMessage = '';
                 c.apiKey = c.apiKey || '';
+                c.secretId = c.secretId || '';
                 c.endpoint = c.endpoint || '';
                 c.model = c.model || '';
                 c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [];
@@ -538,6 +804,10 @@ function importConnections() {
                 c.preset = c.preset || '';
                 c.regexPreset = c.regexPreset || '';
                 c.promptPostProcessing = c.promptPostProcessing || '';
+                const secretKey = getSecretKeyForFormat(c.format);
+                if (!getSecretEntry(secretKey, c.secretId)) {
+                    c.secretId = '';
+                }
                 getConnections().push(c);
                 imported++;
             }
@@ -606,17 +876,25 @@ const SOURCE_TO_FORMAT = {
  */
 async function migrateFromNative() {
     const migrated = [];
-    // Primary dedup: format+endpoint for CM profiles (same endpoint = same connection, model can differ)
-    const cmKeys = new Set(getConnections().map(c => `${c.format}|${c.endpoint}`));
-    // Secondary dedup: endpoint-only for proxy presets (avoid duplicating CM results)
-    const endpointSet = new Set(getConnections().map(c => c.endpoint));
+    const skippedSecretBindings = [];
+    const dedupeKeys = new Set(getConnections().map(c => getConnectionIdentityKey(c)));
 
-    function isCmDuplicate(format, endpoint) {
-        return cmKeys.has(`${format}|${endpoint}`);
+    function getCredentialIdentity({ secretId = '', proxyName = '', apiKey = '' } = {}) {
+        if (secretId) return `secret:${secretId}`;
+        if (proxyName) return `proxy:${proxyName}`;
+        if (apiKey) return `manual:${apiKey}`;
+        return 'manual:';
     }
 
-    function isEndpointDuplicate(endpoint) {
-        return endpointSet.has(endpoint);
+    function getConnectionIdentityKey(conn) {
+        return `${conn.format}|${conn.endpoint}|${getCredentialIdentity({
+            secretId: conn.secretId,
+            apiKey: conn.apiKey,
+        })}`;
+    }
+
+    function isDuplicate(format, endpoint, identity) {
+        return dedupeKeys.has(`${format}|${endpoint}|${identity}`);
     }
 
     function makeConn(name, format, endpoint, apiKey, model) {
@@ -626,6 +904,7 @@ async function migrateFromNative() {
             format,
             endpoint,
             apiKey: apiKey || '',
+            secretId: '',
             model: model || '',
             availableModels: model ? [model] : [],
             excludeBody: [],
@@ -638,8 +917,7 @@ async function migrateFromNative() {
 
     function addConn(conn) {
         getConnections().push(conn);
-        cmKeys.add(`${conn.format}|${conn.endpoint}`);
-        endpointSet.add(conn.endpoint);
+        dedupeKeys.add(getConnectionIdentityKey(conn));
         migrated.push(conn);
     }
 
@@ -677,8 +955,6 @@ async function migrateFromNative() {
                 endpoint = getFormatOption(format).defaultEndpoint;
             }
 
-            if (isCmDuplicate(format, endpoint)) continue;
-
             // Get API key from proxy password (findSecret requires allowKeysExposure)
             let apiKey = '';
             if (profile.proxy) {
@@ -688,6 +964,13 @@ async function migrateFromNative() {
                 }
             }
 
+            const identity = getCredentialIdentity({
+                secretId: profile['secret-id'],
+                proxyName: profile.proxy,
+                apiKey,
+            });
+            if (isDuplicate(format, endpoint, identity)) continue;
+
             const conn = makeConn(
                 profile.name || `${getFormatOption(format).label} (migrated)`,
                 format,
@@ -695,6 +978,26 @@ async function migrateFromNative() {
                 apiKey,
                 profile.model || '',
             );
+
+            if (profile['secret-id']) {
+                const secretKey = getSecretKeyForFormat(format);
+                const secretEntry = getSecretEntry(secretKey, profile['secret-id']);
+
+                if (!secretEntry) {
+                    console.warn(`[ApiHub] Skipped migrating missing native secret binding for "${conn.name}".`);
+                } else if (requiresReadableSecretValue(format)) {
+                    const secretValue = await readSecretValue(secretKey, secretEntry.id);
+                    if (secretValue !== null) {
+                        conn.secretId = secretEntry.id;
+                        conn.apiKey = '';
+                    } else {
+                        skippedSecretBindings.push(conn.name);
+                    }
+                } else {
+                    conn.secretId = secretEntry.id;
+                    conn.apiKey = '';
+                }
+            }
 
             // Carry over associated presets from CM profile
             if (profile.preset) conn.preset = profile.preset;
@@ -711,7 +1014,7 @@ async function migrateFromNative() {
         if (cmReferencedProxyNames.has(proxy.name)) continue; // already covered by CM
         const url = proxy.url.trim();
         if (!url) continue;
-        if (isEndpointDuplicate(url)) continue;
+        if (isDuplicate('openai', url, getCredentialIdentity({ proxyName: proxy.name, apiKey: proxy.password }))) continue;
         addConn(makeConn(proxy.name, 'openai', url, proxy.password, ''));
     }
 
@@ -719,6 +1022,9 @@ async function migrateFromNative() {
         saveSettingsDebounced();
         renderUI();
         toastr.success(`已迁移 ${migrated.length} 个连接配置：${migrated.map(c => c.name).join('、')}`);
+        if (skippedSecretBindings.length > 0) {
+            toastr.warning(`以下连接未迁移原生密钥绑定，已保留原有手动/代理密钥：${skippedSecretBindings.join('、')}。如需跟随原生密钥库切换，请在 config.yaml 中启用 allowKeysExposure。`);
+        }
     } else {
         toastr.info('未检测到可迁移的原生连接配置');
     }
@@ -795,7 +1101,13 @@ function renderConnectionDetails() {
     $('#apihub_endpoint').val(conn.endpoint).attr('placeholder', fmt ? fmt.defaultEndpoint : 'https://...');
 
     // API key
-    $('#apihub_apikey').val(conn.apiKey).attr('placeholder', conn._lastWrittenKey ? '密钥已保存' : 'sk-...');
+    const boundSecretLabel = getConnectionBoundSecretLabel(conn);
+    const secretKey = getSecretKeyForFormat(conn.format);
+    const activeSecretLabel = getActiveSecretLabel(secretKey);
+    const placeholder = boundSecretLabel
+        ? `已绑定密钥: ${boundSecretLabel}`
+        : (activeSecretLabel ? `密钥库: ${activeSecretLabel}` : 'sk-...');
+    $('#apihub_apikey').val(conn.secretId ? '' : conn.apiKey).attr('placeholder', placeholder);
 
     // Model select
     renderModelList(conn);
@@ -974,6 +1286,7 @@ function bindEvents() {
 
     // Connection selector — switch = activate
     $('#apihub_connection_select').on('change', async () => {
+        pendingSecretBinding = null;
         cancelFetch(); // cancel any in-flight model fetch
         const conn = getSelectedConnection();
         if (!conn) return;
@@ -990,6 +1303,7 @@ function bindEvents() {
         const format = $(this).val();
         updateConnection(conn.id, {
             format,
+            secretId: '',
             model: '',
             availableModels: [],
         });
@@ -1001,6 +1315,7 @@ function bindEvents() {
     // Endpoint input → live preview + debounced activate
     let endpointActivateTimer = null;
     $('#apihub_endpoint').on('input', function () {
+        pendingSecretBinding = null;
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { endpoint: $(this).val() });
@@ -1013,9 +1328,10 @@ function bindEvents() {
     // API key input → debounced activate
     let keyActivateTimer = null;
     $('#apihub_apikey').on('input', function () {
+        pendingSecretBinding = null;
         const conn = getSelectedConnection();
         if (!conn) return;
-        updateConnection(conn.id, { apiKey: $(this).val() });
+        updateConnection(conn.id, { apiKey: $(this).val(), secretId: '' });
         clearTimeout(keyActivateTimer);
         keyActivateTimer = setTimeout(() => activateConnection(conn.id), 600);
     });
@@ -1152,9 +1468,15 @@ function bindEvents() {
     });
 
     // Open native key manager
-    $('#apihub_btn_manage_keys').on('click', () => {
+    $('#apihub_btn_manage_keys').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
+        const secretKey = getSecretKeyForFormat(conn.format);
+        startPendingSecretBinding(conn.id, secretKey);
+        await bindConnectionToActiveSecret(conn.id, secretKey, {
+            clearWhenMissing: false,
+            activateIfActive: true,
+        });
         openNativeKeyManager(conn.format);
     });
 
@@ -1345,6 +1667,32 @@ jQuery(async () => {
 
     // Restore saved state
     restoreState();
+
+    // Native key manager actions can change the active secret outside ApiHub.
+    [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED, event_types.SECRET_DELETED, event_types.SECRET_EDITED].forEach(eventName => {
+        eventSource.on(eventName, async (key) => {
+            clearSecretCachesForKey(key);
+
+            if (pendingSecretBinding && pendingSecretBinding.expiresAt < Date.now()) {
+                pendingSecretBinding = null;
+            }
+
+            const shouldBindPending = pendingSecretBinding?.secretKey === key
+                && [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED].includes(eventName);
+            if (shouldBindPending) {
+                await bindConnectionToActiveSecret(pendingSecretBinding.connectionId, key);
+            }
+
+            const selected = getSelectedConnection();
+            if (!selected) return;
+            if (getSecretKeyForFormat(selected.format) !== key) return;
+            if (selected.id === getActiveConnectionId() && selected.secretId) {
+                await activateConnection(selected.id);
+                return;
+            }
+            renderConnectionDetails();
+        });
+    });
 
     console.log('[ApiHub] Extension loaded');
 });
