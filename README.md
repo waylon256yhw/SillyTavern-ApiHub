@@ -1,22 +1,28 @@
 # API Hub — SillyTavern 统一 API 连接管理
 
-酒馆原生有 24 个 Chat Completion Source，但实际上只有 3 种 API 协议格式。配置一个新的 API 连接，你需要：先从 24 个选项里猜对渠道商，再搞清楚 URL 怎么拼，密钥填哪个框，模型列表在哪选。
+API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connection Profile、API Key 表单里的配置流程，整理成一套面向协议的统一前端。
 
-API Hub 把这一切简化成：**选格式 → 填地址 → 填密钥 → 选模型 → 用。**
+核心目标很简单：
+
+- 用 `OpenAI Compatible / Anthropic / Google Gemini` 三种协议视角管理连接
+- 让端点、模型、参数、预设、密钥切换都能跟着连接一起保存和切换
+- 尽量复用 SillyTavern 原生能力，而不是重造一套后端
+
+当前版本：`v1.1.0`
 
 ## 支持的格式
 
 | 格式 | 适用场景 | 对应原生 Source |
 |------|----------|-----------------|
-| OpenAI Compatible | 绝大部分第三方反代、中转站 | Custom |
-| Anthropic | Claude 官方 / 原生协议反代 | Claude |
-| Google Gemini | Google AI Studio / Vertex 反代 | Google AI Studio |
+| OpenAI Compatible | 绝大部分第三方中转、反代、兼容接口 | Custom |
+| Anthropic | Claude 官方 / Anthropic 协议反代 | Claude |
+| Google Gemini | Google AI Studio / Gemini 协议反代 | Google AI Studio |
 
 ## 安装
 
-在酒馆的扩展管理器中，通过 URL 安装：
+在酒馆扩展管理器中通过 URL 安装：
 
-```
+```text
 https://github.com/waylon256yhw/SillyTavern-ApiHub
 ```
 
@@ -29,78 +35,155 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 
 刷新页面即可。
 
-## 功能一览
+## 当前功能
 
-### 连接管理
+### 1. 统一连接管理
 
-- 多个连接配置，随时切换（切换即生效）
-- 每个连接独立保存：端点 URL、API 密钥、模型、自定义参数
-- 保存按钮快照当前完整状态（包括提示词预设、正则预设的关联）
-- 复制 / 重命名 / 删除
+- 多连接配置，切换即生效
+- 每个连接独立保存端点、模型、请求参数、请求头、密钥信息
+- 支持新建、重命名、复制、删除
+- 保存时会快照当前预设状态
 
-### 模型管理
+### 2. 三种协议格式统一处理
 
-- **Fetch 拉取**：自动请求端点的 `/models` 接口获取可用模型列表
-- **手动添加 / 删除**：Fetch 不到的模型可以手动填写
-- 非官方端点统一走 OpenAI 兼容的 `/v1/models` 拉取，官方端点走原生协议
+- `OpenAI Compatible` 自动按 `/v1` 规则归一化 URL
+- `Anthropic` 使用 Claude 原生设置链路
+- `Gemini` 对官方 `v1beta` 场景走专门逻辑，不强行套 OpenAI 兼容实现
+- 端点末尾加 `#` 可进入直连模式，跳过 URL 自动归一化
 
-### URL 预览
+### 3. 模型管理
 
-输入端点后实时显示最终请求 URL，方便确认拼接是否正确。末尾加 `#` 可进入直连模式（跳过自动归一化）。
+- 支持从接口拉取模型列表
+- 支持手动添加和删除模型
+- 非官方端点统一按 `/v1/models` 拉取
+- 官方 Gemini 走 SillyTavern 原生 connect 流程
 
-### 自定义请求参数
+### 4. 自定义请求参数
 
-- **排除参数**：勾选即可从请求体中移除（temperature、top_p 等）
-- **自定义参数**：键值对形式添加额外的请求体参数
-- **自定义请求头**：键值对形式添加额外的 HTTP 头
+- 排除默认 body 参数
+- 添加自定义 body 参数
+- 添加自定义请求头
 
-### 预设联动
+适合处理不同中转或反代的兼容性差异。
 
-切换连接时自动联动切换：
-- 提示词预设（Chat Completion Preset）
-- 正则预设（Regex Preset）
-- 提示词后处理模式（Prompt Post-Processing）
+### 5. 预设联动
 
-和原版 Connection Profile 的行为一致，保存时自动快照当前状态。
+切换连接时会联动切换：
 
-### 迁移
+- Chat Completion Preset
+- Regex Preset
+- Prompt Post-Processing
 
-一键从酒馆原生配置迁移：
-- 读取 Connection Manager 的 Profile 数据（主要数据源）
-- 读取 Proxy Presets 中未被 Profile 引用的条目
-- 自动识别 API 格式（Custom → OpenAI, Claude → Anthropic, Google → Gemini）
-- 密钥从 Proxy Password 迁移，重复配置自动去重
+行为上尽量贴近原生 Connection Profile，但配置入口更集中。
 
-### 导出 / 导入 / 调试
+### 6. 原生密钥库集成
 
-- **导出**：完整备份（含密钥明文），可在其他设备导入还原
-- **导入**：从备份文件还原连接配置，自动拒绝调试文件
-- **调试**：导出脱敏的诊断信息（含原生配置和 Connection Manager 数据），用于排查问题
+这是 `v1.1.0` 的重点能力。
 
-### 原生 UI 切换
+- 连接现在可以直接绑定 SillyTavern 原生密钥库中的某个 `secretId`
+- 切换连接时，会同步切换对应密钥槽的 active key
+- 如果当前槽里已经存在相同明文密钥，会优先复用，不重复写入
+- 对 Anthropic / Gemini 这类运行时必须读出密钥明文的格式，插件会在需要时读取原生密钥值
+- 对 OpenAI Compatible，允许只绑定 `secretId` 跟随原生 active key 切换
 
-右上角切换按钮可随时在 API Hub 界面和酒馆原生界面之间切换，方便对比和调试。
+### 7. 原生密钥库批量工具
 
-## 和原生功能的关系
+插件会前端 patch 原生密钥管理弹窗，新增：
 
-API Hub 接管了以下原生 UI：
+- 批量选中
+- 全选 / 清空
+- 批量导入
+- 批量导出
+- 批量删除
 
-| 被替换 | 说明 |
-|--------|------|
-| Chat Completion Source 选择器 | 由格式选择替代 |
-| Reverse Proxy 面板 | 由端点 URL 输入替代 |
-| Connection Profile 选择器 | 由连接列表替代 |
-| 各 Source 的 API Key 表单 | 由统一的密钥输入替代 |
-| Additional Parameters 按钮 | 由自定义请求参数面板替代 |
+同时保留原生单项操作：
 
-**未替换**的原生功能（保持可见）：
-- Prompt Post-Processing 选择器
-- Test Message 按钮
-- 密钥管理器（通过钥匙图标访问）
+- 设为 active
+- 复制 ID
+- 复制明文
+- 重命名
+- 删除
 
-## 注意事项
+### 8. 导入 / 导出 / 调试
 
-- 密钥以明文存储在 SillyTavern 的 `settings.json` 中（和原生行为一致）
-- 导出的备份文件包含明文密钥，请妥善保管
-- 重置功能会清除所有 API Hub 数据，不影响酒馆原生配置
-- 目前不支持的渠道商格式（OpenRouter、Vertex AI 等）在迁移时会被跳过
+- 连接配置支持完整导出和导入
+- 调试导出会脱敏，方便反馈问题
+- 原生密钥库批量导出使用独立 JSON 格式
+- 原生密钥库批量导入会按“密钥明文值”去重，避免重复导入持续生成新条目
+
+### 9. 原生配置迁移
+
+支持从 SillyTavern 当前原生配置迁移：
+
+- Connection Manager Profiles
+- 未被 Profile 引用的 Proxy Presets
+- 原生 secret 绑定关系
+
+迁移已做去重处理，重复执行不会无限复制连接。
+
+## 与原生功能的关系
+
+API Hub 主要接管这些原生配置入口：
+
+- Chat Completion Source 选择器
+- Reverse Proxy 配置面板
+- Connection Profile 选择器
+- 各 Source 的 API Key 输入区
+- Additional Parameters 配置流
+
+以下原生能力仍然保留并继续使用：
+
+- Prompt Post-Processing
+- Test Message
+- SillyTavern 原生密钥库
+- SillyTavern 原生后端请求链路
+
+## 重要前提
+
+### `allowKeysExposure`
+
+如果你要完整使用“原生密钥库绑定”和“密钥库批量导出/按值去重导入”，需要在当前运行实例的 `config.yaml` 中开启：
+
+```yaml
+allowKeysExposure: true
+```
+
+然后完整重启该实例。
+
+注意是实际运行时使用的 `config.yaml`，不是 `default/config.yaml`。
+
+### 为什么需要它
+
+SillyTavern 默认不允许前端读取原生密钥明文。不开启时：
+
+- 可以使用原生密钥槽本身
+- 但前端无法读取某个 secret 的真实值
+- 因此插件无法可靠完成部分绑定、导出、按值去重判断
+
+## 已知边界
+
+- 原生密钥库“按值去重”和“批量导出”依赖 `allowKeysExposure=true`
+- 插件是纯前端扩展，不修改 SillyTavern core 文件
+- 当前目标是覆盖最常见的 OpenAI Compatible / Anthropic / Gemini 工作流，不追求把所有原生 provider 一次性抽象完
+
+## 安全说明
+
+- API Hub 连接导出文件可能包含明文密钥
+- 原生密钥库批量导出文件同样包含明文密钥
+- 请把这些导出文件视为敏感信息妥善保管
+
+## 适合分享给用户的定位
+
+如果你在 SillyTavern 里主要使用：
+
+- OpenAI 兼容中转
+- Claude 反代
+- Gemini / Google AI Studio
+
+并且你希望：
+
+- 用统一界面管理多个连接
+- 让连接切换时自动带上模型、预设、密钥状态
+- 顺手管理 SillyTavern 原生密钥库
+
+那么 API Hub 现在已经可以作为正式可用版本使用和分享。
