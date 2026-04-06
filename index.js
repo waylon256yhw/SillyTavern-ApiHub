@@ -8,12 +8,13 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, chat_completion_sources, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders, eventSource, event_types } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret, findSecret, rotateSecret, secret_state } from '../../../secrets.js';
+import { SECRET_KEYS, writeSecret, findSecret, rotateSecret, renameSecret, secret_state, deleteSecret } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
 import { SlashCommandAbortController } from '../../../slash-commands/SlashCommandAbortController.js';
 import { SlashCommandDebugController } from '../../../slash-commands/SlashCommandDebugController.js';
+import { copyText } from '../../../utils.js';
 import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, DEFAULT_MODELS } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ const secretValueCache = new Map();
 const SECRET_BINDING_WINDOW_MS = 120000;
 let pendingSecretBinding = null;
 let pendingSecretBindingToken = 0;
+const bulkSecretSelections = new Map();
+let secretManagerObserver = null;
 
 // ── Settings helpers ───────────────────────────────────────────────
 
@@ -178,6 +181,14 @@ function getSecretReadFailureMessage(status) {
     }
 
     return '无法读取绑定的密钥值（/api/secrets/find 请求失败）。请检查浏览器控制台和 SillyTavern 服务端日志。';
+}
+
+function getBulkSelectionForKey(secretKey) {
+    if (!bulkSecretSelections.has(secretKey)) {
+        bulkSecretSelections.set(secretKey, new Set());
+    }
+
+    return bulkSecretSelections.get(secretKey);
 }
 
 // ── Connection CRUD ────────────────────────────────────────────────
@@ -929,6 +940,397 @@ function exportDebug() {
     a.download = `apihub-debug-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+}
+
+function getSecretManagerKey(manager) {
+    return manager.find('.secretKeyManagerInfo code').text().trim();
+}
+
+function getSecretManagerItems(manager) {
+    return manager.find('.secretKeyManagerList .secretKeyManagerItem');
+}
+
+function getSecretManagerItemId(item) {
+    return item.find('.secretKeyManagerItemId').text().trim();
+}
+
+function getSecretManagerItemLabel(item) {
+    return item.find('.secretKeyManagerItemHeader strong').first().text().trim();
+}
+
+async function copySecretManagerText(text, successMessage) {
+    try {
+        await copyText(text);
+        toastr.info(successMessage);
+    } catch {
+        toastr.error('复制失败，请检查浏览器权限');
+    }
+}
+
+function getSecretManagerRenderSignature(secretKey) {
+    const secrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
+    const selection = [...getBulkSelectionForKey(secretKey)].sort();
+    return JSON.stringify({
+        secrets: secrets.map(secret => ({
+            id: secret.id,
+            label: secret.label || '',
+            value: secret.value || '',
+            active: !!secret.active,
+        })),
+        selection,
+    });
+}
+
+function updateSecretManagerBulkUi(manager) {
+    const secretKey = getSecretManagerKey(manager);
+    if (!secretKey) return;
+
+    const selection = getBulkSelectionForKey(secretKey);
+    let selectedVisibleCount = 0;
+    const visibleIds = new Set();
+    const items = getSecretManagerItems(manager);
+    items.each(function () {
+        const item = $(this);
+        const id = getSecretManagerItemId(item);
+        visibleIds.add(id);
+        const checked = selection.has(id);
+        item.find('.apihub_secret_bulk_checkbox').prop('checked', checked);
+        item.toggleClass('apihub_secret_selected', checked);
+        if (checked) selectedVisibleCount++;
+    });
+
+    for (const id of [...selection]) {
+        if (!visibleIds.has(id)) {
+            selection.delete(id);
+        }
+    }
+
+    manager.find('.apihub_secret_bulk_count').text(`${selectedVisibleCount} 已选`);
+    const hasSelection = selection.size > 0;
+    manager.find('.apihub_secret_bulk_export, .apihub_secret_bulk_delete, .apihub_secret_bulk_clear').toggleClass('disabled', !hasSelection);
+}
+
+function buildSecretManagerItem(manager, secretKey, secret) {
+    const selection = getBulkSelectionForKey(secretKey);
+    const checked = selection.has(secret.id);
+    const item = $('<div class="secretKeyManagerItem"></div>')
+        .attr('data-apihub-bulk-patched', 'true')
+        .toggleClass('active', !!secret.active)
+        .toggleClass('apihub_secret_selected', checked);
+    const toggle = $(`
+        <label class="apihub_secret_bulk_toggle">
+            <input type="checkbox" class="apihub_secret_bulk_checkbox" />
+        </label>
+    `);
+    toggle.find('input').prop('checked', checked).on('change', function () {
+        if ($(this).prop('checked')) {
+            selection.add(secret.id);
+        } else {
+            selection.delete(secret.id);
+        }
+        updateSecretManagerBulkUi(manager);
+    });
+
+    const info = $('<div class="secretKeyManagerItemInfo"></div>');
+    const header = $('<div class="secretKeyManagerItemHeader"></div>');
+    $('<strong></strong>').text(secret.label || '').appendTo(header);
+    $('<small></small>').text(secret.value || '').appendTo(header);
+    const subtitle = $('<div class="secretKeyManagerItemSubtitle"></div>');
+    subtitle.append('<strong>ID:</strong>');
+    const idSpan = $('<span class="secretKeyManagerItemId" title="Copy ID"></span>').text(secret.id);
+    idSpan.on('click', async () => {
+        await copySecretManagerText(secret.id, '密钥 ID 已复制');
+    });
+    subtitle.append(idSpan);
+    info.append(header, subtitle);
+
+    const actions = $('<div class="secretKeyManagerItemActions"></div>');
+    const row1 = $('<div class="secretKeyManagerItemActionsRow"></div>');
+    const rotateBtn = $('<button class="menu_button menu_button_icon" type="button" title="Select"><i class="fa-fw fa-solid fa-check"></i></button>')
+        .toggleClass('disabled', !!secret.active)
+        .on('click', async function () {
+            if ($(this).hasClass('disabled')) return;
+            await rotateSecret(secretKey, secret.id);
+            renderSecretManagerItems(manager);
+        });
+    const copyBtn = $('<button class="menu_button menu_button_icon" type="button" title="Copy"><i class="fa-fw fa-solid fa-copy"></i></button>')
+        .on('click', async () => {
+            const { value, status } = await fetchSecretValue(secretKey, secret.id);
+            if (value === null) {
+                toastr.error(getSecretReadFailureMessage(status));
+                return;
+            }
+            await copySecretManagerText(value, '密钥值已复制');
+        });
+    row1.append(rotateBtn, copyBtn);
+
+    const row2 = $('<div class="secretKeyManagerItemActionsRow"></div>');
+    const renameBtn = $('<button class="menu_button menu_button_icon" type="button" title="Rename"><i class="fa-fw fa-solid fa-pen-to-square"></i></button>')
+        .on('click', async () => {
+            const label = await callGenericPopup('输入新的密钥标签：', POPUP_TYPE.INPUT, secret?.label || '');
+            if (label === null) return;
+            const nextLabel = String(label).trim();
+            if (!nextLabel) return;
+            await renameSecret(secretKey, secret.id, nextLabel);
+            renderSecretManagerItems(manager);
+        });
+    const deleteBtn = $('<button class="menu_button menu_button_icon" type="button" title="Delete"><i class="fa-fw fa-solid fa-trash"></i></button>')
+        .on('click', async () => {
+            const confirmed = await callGenericPopup(`确定删除密钥“${secret?.label || secret.id}”？此操作不可撤销。`, POPUP_TYPE.CONFIRM);
+            if (!confirmed) return;
+            await deleteSecret(secretKey, secret.id);
+            selection.delete(secret.id);
+            renderSecretManagerItems(manager);
+        });
+    row2.append(renameBtn, deleteBtn);
+
+    actions.append(row1, row2);
+    item.append(toggle, info, actions);
+    return item;
+}
+
+function renderSecretManagerItems(manager) {
+    const secretKey = getSecretManagerKey(manager);
+    if (!secretKey) return;
+
+    const list = manager.find('.secretKeyManagerList');
+    if (!list.length) return;
+    const signature = getSecretManagerRenderSignature(secretKey);
+    if (manager.attr('data-apihub-bulk-signature') === signature) {
+        updateSecretManagerBulkUi(manager);
+        return;
+    }
+
+    const secrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
+    const previousScrollTop = list.scrollTop();
+    const items = secrets.map(secret => buildSecretManagerItem(manager, secretKey, secret));
+    list.empty().append(items).scrollTop(previousScrollTop);
+    manager.find('.secretKeyManagerListEmpty').toggle(secrets.length === 0);
+    manager.attr('data-apihub-bulk-signature', signature);
+    updateSecretManagerBulkUi(manager);
+}
+
+function downloadJson(filename, data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+async function exportSelectedSecrets(manager) {
+    const secretKey = getSecretManagerKey(manager);
+    const selection = getBulkSelectionForKey(secretKey);
+    const ids = [...selection];
+    if (ids.length === 0) {
+        toastr.warning('请先选择要导出的密钥');
+        return;
+    }
+
+    const itemsById = new Map();
+    getSecretManagerItems(manager).each(function () {
+        const item = $(this);
+        itemsById.set(getSecretManagerItemId(item), item);
+    });
+
+    const secrets = [];
+    for (const id of ids) {
+        const item = itemsById.get(id);
+        if (!item) continue;
+        const { value, status } = await fetchSecretValue(secretKey, id);
+        if (value === null) {
+            toastr.error(getSecretReadFailureMessage(status));
+            return;
+        }
+
+        secrets.push({
+            id,
+            label: getSecretManagerItemLabel(item),
+            value,
+            active: item.hasClass('active'),
+        });
+    }
+
+    downloadJson(`secrets-${secretKey}-${Date.now()}.json`, {
+        key: secretKey,
+        exportedAt: new Date().toISOString(),
+        secrets,
+    });
+    toastr.success(`已导出 ${secrets.length} 个密钥`);
+}
+
+async function importSecretsIntoManager(manager) {
+    const secretKey = getSecretManagerKey(manager);
+    if (!secretKey) return;
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        try {
+            const raw = JSON.parse(await file.text());
+            const secrets = Array.isArray(raw) ? raw : raw?.secrets;
+            if (!Array.isArray(secrets) || secrets.length === 0) {
+                toastr.warning('导入失败：文件中没有密钥条目');
+                return;
+            }
+
+            if (raw?.key && raw.key !== secretKey) {
+                toastr.warning(`导入失败：该文件属于 ${raw.key}，当前密钥槽是 ${secretKey}`);
+                return;
+            }
+
+            let imported = 0;
+            let activeImportedId = '';
+
+            for (const secret of secrets) {
+                const value = typeof secret?.value === 'string' ? secret.value : null;
+                if (value === null) continue;
+                const label = typeof secret?.label === 'string' ? secret.label.trim() : '';
+                const id = await writeSecret(secretKey, value, label, { allowEmpty: true });
+                if (id) {
+                    imported++;
+                    if (secret.active) {
+                        activeImportedId = id;
+                    }
+                }
+            }
+
+            if (activeImportedId) {
+                await rotateSecret(secretKey, activeImportedId);
+            }
+
+            if (imported > 0) {
+                const selection = getBulkSelectionForKey(secretKey);
+                selection.clear();
+                const latestSecrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
+                for (const secret of latestSecrets) {
+                    selection.add(secret.id);
+                }
+                renderSecretManagerItems(manager);
+                toastr.success(`已导入 ${imported} 个密钥`);
+            } else {
+                toastr.warning('导入失败：没有有效密钥条目');
+            }
+        } catch {
+            toastr.error('导入失败：文件格式无效');
+        }
+    };
+    input.click();
+}
+
+async function deleteSelectedSecrets(manager) {
+    const secretKey = getSecretManagerKey(manager);
+    const selection = getBulkSelectionForKey(secretKey);
+    const ids = [...selection];
+    if (ids.length === 0) {
+        toastr.warning('请先选择要删除的密钥');
+        return;
+    }
+
+    const confirmed = await callGenericPopup(`确定删除选中的 ${ids.length} 个密钥？此操作不可撤销。`, POPUP_TYPE.CONFIRM);
+    if (!confirmed) return;
+
+    for (const id of ids) {
+        await deleteSecret(secretKey, id);
+    }
+    selection.clear();
+    renderSecretManagerItems(manager);
+    toastr.success(`已删除 ${ids.length} 个密钥`);
+}
+
+function mountSecretManagerToolbar(manager) {
+    if (manager.attr('data-apihub-bulk-toolbar') === 'true') return;
+    manager.attr('data-apihub-bulk-toolbar', 'true');
+
+    const toolbar = $(`
+        <div class="apihub_secret_bulk_bar">
+            <div class="apihub_secret_bulk_group">
+                <button class="menu_button menu_button_icon apihub_secret_bulk_select_all" type="button">
+                    <i class="fa-solid fa-check-double"></i>
+                    <span>全选</span>
+                </button>
+                <button class="menu_button menu_button_icon apihub_secret_bulk_clear disabled" type="button">
+                    <i class="fa-solid fa-xmark"></i>
+                    <span>清空</span>
+                </button>
+            </div>
+            <div class="apihub_secret_bulk_group">
+                <button class="menu_button menu_button_icon apihub_secret_bulk_import" type="button">
+                    <i class="fa-solid fa-file-import"></i>
+                    <span>导入</span>
+                </button>
+                <button class="menu_button menu_button_icon apihub_secret_bulk_export disabled" type="button">
+                    <i class="fa-solid fa-file-export"></i>
+                    <span>导出</span>
+                </button>
+                <button class="menu_button menu_button_icon apihub_secret_bulk_delete disabled" type="button">
+                    <i class="fa-solid fa-trash-can"></i>
+                    <span>删除</span>
+                </button>
+            </div>
+            <div class="apihub_secret_bulk_count">0 已选</div>
+        </div>
+    `);
+
+    toolbar.find('.apihub_secret_bulk_select_all').on('click', () => {
+        const secretKey = getSecretManagerKey(manager);
+        const selection = getBulkSelectionForKey(secretKey);
+        getSecretManagerItems(manager).each(function () {
+            selection.add(getSecretManagerItemId($(this)));
+        });
+        updateSecretManagerBulkUi(manager);
+    });
+
+    toolbar.find('.apihub_secret_bulk_clear').on('click', function () {
+        if ($(this).hasClass('disabled')) return;
+        const secretKey = getSecretManagerKey(manager);
+        getBulkSelectionForKey(secretKey).clear();
+        updateSecretManagerBulkUi(manager);
+    });
+
+    toolbar.find('.apihub_secret_bulk_export').on('click', async function () {
+        if ($(this).hasClass('disabled')) return;
+        await exportSelectedSecrets(manager);
+    });
+
+    toolbar.find('.apihub_secret_bulk_import').on('click', async () => {
+        await importSecretsIntoManager(manager);
+    });
+
+    toolbar.find('.apihub_secret_bulk_delete').on('click', async function () {
+        if ($(this).hasClass('disabled')) return;
+        await deleteSelectedSecrets(manager);
+    });
+
+    manager.find('.secretKeyManagerHeader').after(toolbar);
+}
+
+function enhanceSecretManager(manager) {
+    if (!manager?.length) return;
+    mountSecretManagerToolbar(manager);
+    renderSecretManagerItems(manager);
+}
+
+function initSecretManagerPatch() {
+    const enhanceAll = () => {
+        $('dialog .secretKeyManager').each(function () {
+            enhanceSecretManager($(this));
+        });
+    };
+
+    enhanceAll();
+    if (secretManagerObserver) return;
+
+    secretManagerObserver = new MutationObserver(() => {
+        enhanceAll();
+    });
+    secretManagerObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 // ── Migration from native ST config ───────────────────────────────
@@ -1740,6 +2142,9 @@ jQuery(async () => {
 
     // Bind events
     bindEvents();
+
+    // Patch the native secret manager with bulk tools.
+    initSecretManagerPatch();
 
     // Restore saved state
     restoreState();

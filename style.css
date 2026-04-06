@@ -333,3 +333,42 @@
     font-family: var(--monoFontFamily, 'Courier New', monospace);
     font-size: calc(var(--mainFontSize) * 0.85);
 }
+
+/* Secret manager bulk tools */
+.apihub_secret_bulk_bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 0 2px;
+}
+
+.apihub_secret_bulk_group {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.apihub_secret_bulk_count {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.7;
+}
+
+.secretKeyManagerItem.apihub_secret_selected {
+    border-color: color-mix(in srgb, var(--SmartThemeEmColor, #6aa0ff) 55%, var(--SmartThemeBorderColor));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--SmartThemeEmColor, #6aa0ff) 35%, transparent);
+}
+
+.apihub_secret_bulk_toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding-right: 10px;
+}
+
+.apihub_secret_bulk_checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
