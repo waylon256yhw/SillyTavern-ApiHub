@@ -164,6 +164,22 @@ function startPendingSecretBinding(connectionId, secretKey) {
     window.setTimeout(poll, 0);
 }
 
+function getSecretReadFailureMessage(status) {
+    if (status === 403) {
+        return '无法读取绑定的密钥值（/api/secrets/find 返回 403）。如果你已经开启 allowKeysExposure，请确认修改的是当前实例实际使用的 config.yaml，并且已完整重启该实例。';
+    }
+
+    if (status === 404) {
+        return '无法读取绑定的密钥值：对应的原生密钥条目不存在，或该密钥槽当前没有可读条目。';
+    }
+
+    if (status) {
+        return `无法读取绑定的密钥值（/api/secrets/find 返回 ${status}）。请检查浏览器控制台和 SillyTavern 服务端日志。`;
+    }
+
+    return '无法读取绑定的密钥值（/api/secrets/find 请求失败）。请检查浏览器控制台和 SillyTavern 服务端日志。';
+}
+
 // ── Connection CRUD ────────────────────────────────────────────────
 
 async function createConnection(name, format) {
@@ -320,18 +336,37 @@ async function readCurrentPresets() {
     return { preset, regexPreset, promptPostProcessing };
 }
 
+async function fetchSecretValue(secretKey, secretId) {
+    try {
+        const response = await fetch('/api/secrets/find', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ key: secretKey, id: secretId }),
+        });
+
+        if (!response.ok) {
+            return { value: null, status: response.status };
+        }
+
+        const data = await response.json();
+        return { value: data.value, status: response.status };
+    } catch {
+        return { value: null, status: null };
+    }
+}
+
 async function readSecretValue(secretKey, secretId) {
-    if (!secretKey || !secretId) return null;
+    if (!secretKey || !secretId) return { value: null, status: null };
     const cacheKey = getSecretValueCacheKey(secretKey, secretId);
     if (secretValueCache.has(cacheKey)) {
-        return secretValueCache.get(cacheKey);
+        return { value: secretValueCache.get(cacheKey), status: 200 };
     }
 
-    const value = await findSecret(secretKey, secretId);
+    const { value, status } = await fetchSecretValue(secretKey, secretId);
     if (value !== null) {
         secretValueCache.set(cacheKey, value);
     }
-    return value;
+    return { value, status };
 }
 
 async function findReusableEmptySecret(secretKey) {
@@ -340,7 +375,7 @@ async function findReusableEmptySecret(secretKey) {
 
     const candidates = secrets.filter(secret => secret.label === EMPTY_SECRET_LABEL);
     for (const secret of candidates) {
-        const value = await readSecretValue(secretKey, secret.id);
+        const { value } = await readSecretValue(secretKey, secret.id);
         if (value === '') {
             return secret;
         }
@@ -355,7 +390,7 @@ async function findSecretEntryByValue(secretKey, desiredValue) {
     if (!Array.isArray(secrets)) return null;
 
     for (const secret of secrets) {
-        const value = await readSecretValue(secretKey, secret.id);
+        const { value } = await readSecretValue(secretKey, secret.id);
         if (value === desiredValue) {
             return secret;
         }
@@ -379,10 +414,10 @@ async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhen
         return false;
     }
 
-    const secretValue = await readSecretValue(secretKey, activeSecret.id);
+    const { value: secretValue, status } = await readSecretValue(secretKey, activeSecret.id);
 
     if (secretValue === null && requiresReadableSecretValue(conn.format)) {
-        toastr.warning('该格式绑定原生密钥库后仍需读取密钥值。请在 config.yaml 中启用 allowKeysExposure。');
+        toastr.warning(getSecretReadFailureMessage(status));
         return false;
     }
 
@@ -423,17 +458,17 @@ async function resolveConnectionApiKey(conn) {
         const secretEntry = getSecretEntry(secretKey, conn.secretId);
         if (!secretEntry) {
             updateConnection(conn.id, { secretId: '', apiKey: '' });
-            return '';
+            return { apiKey: '', readStatus: 404 };
         } else {
-            const secretValue = await readSecretValue(secretKey, conn.secretId);
+            const { value: secretValue, status } = await readSecretValue(secretKey, conn.secretId);
             if (secretValue !== null) {
-                return secretValue;
+                return { apiKey: secretValue, readStatus: 200 };
             }
-            return null;
+            return { apiKey: null, readStatus: status };
         }
     }
 
-    return conn.apiKey || '';
+    return { apiKey: conn.apiKey || '', readStatus: 200 };
 }
 
 async function syncNativeSecretSlot(conn) {
@@ -522,7 +557,7 @@ async function activateConnection(id) {
 
     // Keep the native secret slot aligned with the currently selected connection.
     await syncNativeSecretSlot(conn);
-    const runtimeApiKey = await resolveConnectionApiKey(conn);
+    const { apiKey: runtimeApiKey } = await resolveConnectionApiKey(conn);
 
     // Apply preset FIRST (before connection fields) — preset may overwrite oai_settings
     // when bind_preset_to_connection is enabled. We reapply our fields after.
@@ -659,11 +694,11 @@ async function fetchModels() {
             await syncNativeSecretSlot(conn);
         } else {
             // Write API key to CUSTOM secret slot for this request
-            const runtimeApiKey = await resolveConnectionApiKey(conn);
+            const { apiKey: runtimeApiKey, readStatus } = await resolveConnectionApiKey(conn);
             if (runtimeApiKey) {
                 await writeSecret(SECRET_KEYS.CUSTOM, runtimeApiKey);
             } else if (conn.secretId) {
-                toastr.warning('无法读取绑定的密钥值。请在 config.yaml 中启用 allowKeysExposure，或改用手动输入。');
+                toastr.warning(getSecretReadFailureMessage(readStatus));
                 cleanup();
                 renderUI();
                 return;
@@ -1015,7 +1050,7 @@ async function migrateFromNative() {
                 if (!secretEntry) {
                     console.warn(`[ApiHub] Skipped migrating missing native secret binding for "${conn.name}".`);
                 } else if (requiresReadableSecretValue(format)) {
-                    const secretValue = await readSecretValue(secretKey, secretEntry.id);
+                    const { value: secretValue } = await readSecretValue(secretKey, secretEntry.id);
                     if (secretValue !== null) {
                         conn.secretId = secretEntry.id;
                         conn.apiKey = '';
@@ -1052,7 +1087,7 @@ async function migrateFromNative() {
         renderUI();
         toastr.success(`已迁移 ${migrated.length} 个连接配置：${migrated.map(c => c.name).join('、')}`);
         if (skippedSecretBindings.length > 0) {
-            toastr.warning(`以下连接未迁移原生密钥绑定，已保留原有手动/代理密钥：${skippedSecretBindings.join('、')}。如需跟随原生密钥库切换，请在 config.yaml 中启用 allowKeysExposure。`);
+            toastr.warning(`以下连接未迁移原生密钥绑定，已保留原有手动/代理密钥：${skippedSecretBindings.join('、')}。只有当前实例允许前端读取原生密钥时，才可自动绑定 secretId。`);
         }
     } else {
         toastr.info('未检测到可迁移的原生连接配置');
