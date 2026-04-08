@@ -307,33 +307,6 @@
     cursor: pointer;
 }
 
-/* Key-value pair list */
-.apihub_kv_list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.apihub_kv_row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.apihub_kv_row input.apihub_kv_key {
-    flex: 0 0 35%;
-    min-width: 0;
-    font-family: var(--monoFontFamily, 'Courier New', monospace);
-    font-size: calc(var(--mainFontSize) * 0.85);
-}
-
-.apihub_kv_row input.apihub_kv_value {
-    flex: 1;
-    min-width: 0;
-    font-family: var(--monoFontFamily, 'Courier New', monospace);
-    font-size: calc(var(--mainFontSize) * 0.85);
-}
-
 /* Secret manager bulk tools */
 .apihub_secret_bulk_bar {
     display: flex;

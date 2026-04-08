@@ -8,7 +8,7 @@ API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connectio
 - 让端点、模型、参数、预设、密钥切换都能跟着连接一起保存和切换
 - 尽量复用 SillyTavern 原生能力，而不是重造一套后端
 
-当前版本：`v1.1.0`
+当前版本：`v1.1.1`
 
 ## 支持的格式
 
@@ -40,7 +40,7 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 ### 1. 统一连接管理
 
 - 多连接配置，切换即生效
-- 每个连接独立保存端点、模型、请求参数、请求头、密钥信息
+- 每个连接独立保存端点、模型、排除参数、密钥信息
 - 支持新建、重命名、复制、删除
 - 保存时会快照当前预设状态
 
@@ -58,13 +58,11 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 - 非官方端点统一按 `/v1/models` 拉取
 - 官方 Gemini 走 SillyTavern 原生 connect 流程
 
-### 4. 自定义请求参数
+### 4. 请求参数排除（GUI 勾选）
 
-- 排除默认 body 参数
-- 添加自定义 body 参数
-- 添加自定义请求头
-
-适合处理不同中转或反代的兼容性差异。
+- 仅保留“排除默认 body 参数”
+- 勾选后在发送前从请求体顶层移除
+- 对 OpenAI Compatible / Anthropic / Gemini 三种格式统一生效
 
 ### 5. 预设联动
 
@@ -78,7 +76,7 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 
 ### 6. 原生密钥库集成
 
-这是 `v1.1.0` 的重点能力。
+这是 `v1.1.1` 的重点能力。
 
 - 连接现在可以直接绑定 SillyTavern 原生密钥库中的某个 `secretId`
 - 切换连接时，会同步切换对应密钥槽的 active key

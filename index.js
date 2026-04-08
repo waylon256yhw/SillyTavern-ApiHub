@@ -207,8 +207,6 @@ async function createConnection(name, format) {
         model: '',
         availableModels: [],
         excludeBody: [],          // string[] — parameter names to exclude
-        includeBody: [],          // { key, value }[] — custom body params
-        includeHeaders: [],       // { key, value }[] — custom headers
         preset: currentPresets.preset,
         regexPreset: currentPresets.regexPreset,
         promptPostProcessing: currentPresets.promptPostProcessing,
@@ -236,8 +234,6 @@ function createPresetConnection(name, format) {
         model: fmt.defaultModel,
         availableModels: [...fmt.defaultModels],
         excludeBody: [],
-        includeBody: [],
-        includeHeaders: [],
         status: 'idle',
         statusMessage: '',
     };
@@ -278,36 +274,55 @@ function duplicateConnection(id) {
     return dup;
 }
 
-// ── YAML conversion for custom parameters ────────────────────────
+function trimTrailingSlash(url) {
+    return String(url || '').trim().replace(/\/+$/, '');
+}
 
-/**
- * Convert key-value pairs array to YAML string.
- * Values are auto-typed: numbers stay numeric, booleans stay boolean, rest is string.
- */
-function kvPairsToYaml(pairs) {
-    if (!pairs || pairs.length === 0) return '';
-    const lines = [];
-    for (const { key, value } of pairs) {
-        if (!key) continue;
-        // Try to preserve types: number, boolean, null
-        let v = value;
-        if (v === 'true') v = true;
-        else if (v === 'false') v = false;
-        else if (v === 'null' || v === '') v = null;
-        else if (!isNaN(v) && v.trim() !== '') v = Number(v);
-        else v = JSON.stringify(v); // quote strings for YAML safety
-        lines.push(`${key}: ${v}`);
+function getConnectionRequestSource(format) {
+    return FORMAT_TO_SOURCE[format];
+}
+
+function getConnectionRequestBaseUrl(conn) {
+    if (!conn) return '';
+    if (conn.format === 'openai' || conn.format === 'anthropic') {
+        return normalizeUrl(conn.endpoint, conn.format).normalized;
     }
-    return lines.join('\n');
+    if (conn.format === 'gemini') {
+        return trimTrailingSlash(conn.endpoint);
+    }
+    return '';
+}
+
+function matchesActiveConnectionRequest(conn, generateData) {
+    if (!conn || !generateData) return false;
+    if (generateData.chat_completion_source !== getConnectionRequestSource(conn.format)) return false;
+    if (!conn.model || generateData.model !== conn.model) return false;
+
+    const expectedBaseUrl = getConnectionRequestBaseUrl(conn);
+    if (!expectedBaseUrl) return false;
+
+    if (conn.format === 'openai') {
+        return trimTrailingSlash(generateData.custom_url) === expectedBaseUrl;
+    }
+
+    return trimTrailingSlash(generateData.reverse_proxy) === expectedBaseUrl;
 }
 
 /**
- * Convert exclude keys array to YAML string (list of single-key objects with null value).
- * Format: "key1:\nkey2:\n..."
+ * Apply GUI-selected exclusion keys before ST sends the chat-completions request.
  */
-function excludeKeysToYaml(keys) {
-    if (!keys || keys.length === 0) return '';
-    return keys.map(k => `${k}:`).join('\n');
+function applyActiveConnectionExclusions(generateData) {
+    if (nativeUIVisible) return;
+
+    const conn = getActiveConnection();
+    const excludedKeys = conn?.excludeBody;
+
+    if (!conn || !Array.isArray(excludedKeys) || excludedKeys.length === 0) return;
+    if (!matchesActiveConnectionRequest(conn, generateData)) return;
+
+    for (const key of excludedKeys) {
+        if (key) delete generateData[key];
+    }
 }
 
 // ── Slash command helper ──────────────────────────────────────────
@@ -620,10 +635,10 @@ async function activateConnection(id) {
         $('#model_google_select').val(conn.model);
     }
 
-    // Write custom parameters as YAML strings
-    oai_settings.custom_include_body = kvPairsToYaml(conn.includeBody);
-    oai_settings.custom_exclude_body = excludeKeysToYaml(conn.excludeBody);
-    oai_settings.custom_include_headers = kvPairsToYaml(conn.includeHeaders);
+    // Keep native custom YAML params empty. ApiHub applies exclusions via a unified pre-send hook.
+    oai_settings.custom_include_body = '';
+    oai_settings.custom_exclude_body = '';
+    oai_settings.custom_include_headers = '';
 
     // Apply regex preset only when it actually changes (avoids chat reloads on every edit)
     const currentRegex = await runSlashCommand('regex-preset', '') || '';
@@ -731,7 +746,6 @@ async function fetchModels() {
         const body = {
             chat_completion_source: chat_completion_sources.CUSTOM,
             custom_url: normalized,
-            custom_include_headers: kvPairsToYaml(conn.includeHeaders),
         };
 
         const response = await fetch('/api/backends/chat-completions/status', {
@@ -886,8 +900,8 @@ function importConnections() {
                 c.model = c.model || '';
                 c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [];
                 c.excludeBody = Array.isArray(c.excludeBody) ? c.excludeBody : [];
-                c.includeBody = Array.isArray(c.includeBody) ? c.includeBody : [];
-                c.includeHeaders = Array.isArray(c.includeHeaders) ? c.includeHeaders : [];
+                delete c.includeBody;
+                delete c.includeHeaders;
                 c.preset = c.preset || '';
                 c.regexPreset = c.regexPreset || '';
                 c.promptPostProcessing = c.promptPostProcessing || '';
@@ -1423,8 +1437,6 @@ async function migrateFromNative() {
             model: model || '',
             availableModels: model ? [model] : [],
             excludeBody: [],
-            includeBody: [],
-            includeHeaders: [],
             status: 'idle',
             statusMessage: '',
         };
@@ -1546,32 +1558,6 @@ async function migrateFromNative() {
     return migrated;
 }
 
-/**
- * Parse YAML-style "key:\nkey2:\n" into array of key names.
- */
-function parseYamlKeys(yamlStr) {
-    if (!yamlStr) return [];
-    return yamlStr.split('\n')
-        .map(line => line.replace(/:.*$/, '').trim())
-        .filter(Boolean);
-}
-
-/**
- * Parse YAML-style "key: value\nkey2: value2\n" into [{key, value}].
- */
-function parseYamlKvPairs(yamlStr) {
-    if (!yamlStr) return [];
-    const pairs = [];
-    for (const line of yamlStr.split('\n')) {
-        const idx = line.indexOf(':');
-        if (idx === -1) continue;
-        const key = line.slice(0, idx).trim();
-        const value = line.slice(idx + 1).trim();
-        if (key) pairs.push({ key, value });
-    }
-    return pairs;
-}
-
 // ── UI Rendering ───────────────────────────────────────────────────
 
 function renderUI() {
@@ -1681,7 +1667,7 @@ function renderUrlPreview() {
     $('#apihub_url_preview').show();
 }
 
-// ── Custom Parameters Rendering ───────────────────────────────────
+// ── Exclusion Params Rendering ────────────────────────────────────
 
 function renderCustomParams(conn) {
     conn = conn || getSelectedConnection();
@@ -1689,39 +1675,13 @@ function renderCustomParams(conn) {
 
     // Ensure arrays exist (migration for old connections)
     conn.excludeBody = conn.excludeBody || [];
-    conn.includeBody = conn.includeBody || [];
-    conn.includeHeaders = conn.includeHeaders || [];
-
     renderExcludeBody(conn);
-    renderKvList($('#apihub_include_body'), conn.includeBody, 'body');
-    renderKvList($('#apihub_include_headers'), conn.includeHeaders, 'header');
 }
 
 function renderExcludeBody(conn) {
     $('#apihub_exclude_body input[type="checkbox"]').each(function () {
         $(this).prop('checked', conn.excludeBody.includes($(this).val()));
     });
-}
-
-function renderKvList(container, pairs, type) {
-    container.empty();
-    for (let i = 0; i < pairs.length; i++) {
-        const row = buildKvRow(pairs[i].key, pairs[i].value, type, i);
-        container.append(row);
-    }
-}
-
-function buildKvRow(key, value, type, index) {
-    const row = $('<div class="apihub_kv_row"></div>');
-    const keyInput = $(`<input type="text" class="text_pole apihub_kv_key" placeholder="key" value="${escapeHtml(key || '')}" data-type="${type}" data-index="${index}" />`);
-    const valInput = $(`<input type="text" class="text_pole apihub_kv_value" placeholder="value" value="${escapeHtml(value || '')}" data-type="${type}" data-index="${index}" />`);
-    const delBtn = $(`<div class="menu_button menu_button_icon apihub_kv_delete" data-type="${type}" data-index="${index}" title="Remove"><i class="fa-solid fa-xmark"></i></div>`);
-    row.append(keyInput, valInput, delBtn);
-    return row;
-}
-
-function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Hide native UI elements ────────────────────────────────────────
@@ -2024,7 +1984,7 @@ function bindEvents() {
         await migrateFromNative();
     });
 
-    // ── Custom Parameters ──
+    // ── Request Parameter Exclusions ──
 
     // Collapsible toggle
     $('#apihub_params_toggle').on('click', () => {
@@ -2044,56 +2004,6 @@ function bindEvents() {
             conn.excludeBody = conn.excludeBody.filter(k => k !== key);
         }
         saveSettingsDebounced();
-    });
-
-    // Add body param
-    $('#apihub_btn_add_param').on('click', () => {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        conn.includeBody = conn.includeBody || [];
-        conn.includeBody.push({ key: '', value: '' });
-        saveSettingsDebounced();
-        renderKvList($('#apihub_include_body'), conn.includeBody, 'body');
-    });
-
-    // Add header
-    $('#apihub_btn_add_header').on('click', () => {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        conn.includeHeaders = conn.includeHeaders || [];
-        conn.includeHeaders.push({ key: '', value: '' });
-        saveSettingsDebounced();
-        renderKvList($('#apihub_include_headers'), conn.includeHeaders, 'header');
-    });
-
-    // KV input changes (event delegation)
-    $(document).on('input', '.apihub_kv_key, .apihub_kv_value', function () {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        const type = $(this).data('type');
-        const index = $(this).data('index');
-        const arr = type === 'body' ? conn.includeBody : conn.includeHeaders;
-        if (!arr || !arr[index]) return;
-        if ($(this).hasClass('apihub_kv_key')) {
-            arr[index].key = $(this).val();
-        } else {
-            arr[index].value = $(this).val();
-        }
-        saveSettingsDebounced();
-    });
-
-    // KV delete (event delegation)
-    $(document).on('click', '.apihub_kv_delete', function () {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        const type = $(this).data('type');
-        const index = $(this).data('index');
-        const arr = type === 'body' ? conn.includeBody : conn.includeHeaders;
-        if (!arr) return;
-        arr.splice(index, 1);
-        saveSettingsDebounced();
-        const container = type === 'body' ? $('#apihub_include_body') : $('#apihub_include_headers');
-        renderKvList(container, arr, type);
     });
 }
 
@@ -2146,6 +2056,13 @@ function restoreState() {
         saveSettingsDebounced();
     }
 
+    // Cleanup legacy fields from old versions.
+    for (const conn of conns) {
+        conn.excludeBody = Array.isArray(conn.excludeBody) ? conn.excludeBody : [];
+        delete conn.includeBody;
+        delete conn.includeHeaders;
+    }
+
     renderUI();
 }
 
@@ -2180,6 +2097,10 @@ jQuery(async () => {
 
     // Bind events
     bindEvents();
+
+    // Apply ApiHub exclusions right before ST sends chat-completion requests.
+    eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, applyActiveConnectionExclusions);
+    eventSource.makeLast(event_types.CHAT_COMPLETION_SETTINGS_READY, applyActiveConnectionExclusions);
 
     // Patch the native secret manager with bulk tools.
     initSecretManagerPatch();
