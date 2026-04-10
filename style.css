@@ -11,11 +11,25 @@
 
 /* Branding */
 .apihub_branding {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 6px;
+    padding: 6px 0;
+}
+
+.apihub_branding_left {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 0;
-    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.apihub_branding_right {
+    justify-self: end;
+    display: flex;
+    align-items: center;
 }
 
 .apihub_brand_name {
@@ -33,15 +47,8 @@
     opacity: 0.5;
 }
 
-.apihub_branding_actions {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
 .apihub_migrate_cta {
+    justify-self: center;
     border-radius: 999px;
     padding: 4px 10px;
     font-weight: 700;
@@ -85,14 +92,18 @@
 }
 
 @media (max-width: 700px) {
-    .apihub_branding_actions {
-        width: 100%;
-        margin-left: 0;
-        justify-content: space-between;
+    .apihub_branding {
+        grid-template-columns: 1fr;
     }
 
-    .apihub_migrate_cta span {
-        white-space: nowrap;
+    .apihub_branding_left,
+    .apihub_branding_right,
+    .apihub_migrate_cta {
+        justify-self: stretch;
+    }
+
+    .apihub_branding_right {
+        justify-content: flex-end;
     }
 }
 
