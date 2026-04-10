@@ -20,6 +20,7 @@ import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, DEFAU
 // ── Constants ──────────────────────────────────────────────────────
 
 const MODULE_NAME = 'third-party/SillyTavern-ApiHub';
+const MODULE_MANIFEST_URL = `/scripts/extensions/${MODULE_NAME}/manifest.json`;
 
 const DEFAULT_SETTINGS = {
     connections: [],
@@ -2066,6 +2067,25 @@ function restoreState() {
     renderUI();
 }
 
+async function renderExtensionVersion() {
+    const versionEl = $('#apihub_brand_ver');
+    if (!versionEl.length) return;
+
+    try {
+        const response = await fetch(MODULE_MANIFEST_URL, { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const manifest = await response.json();
+        const version = typeof manifest?.version === 'string' ? manifest.version.trim() : '';
+        versionEl.text(version ? `v${version}` : '');
+    } catch (err) {
+        console.warn('[ApiHub] Failed to load manifest version:', err);
+        versionEl.text('');
+    }
+}
+
 jQuery(async () => {
     // Initialize settings
     if (!extension_settings.apiHub) {
@@ -2091,6 +2111,7 @@ jQuery(async () => {
     }
     container.insertAdjacentHTML('afterbegin', html);
     console.log('[ApiHub] HTML injected, #apihub_container exists:', !!document.getElementById('apihub_container'));
+    await renderExtensionVersion();
 
     // Hide native Chat Completion Source UI
     hideNativeUI();

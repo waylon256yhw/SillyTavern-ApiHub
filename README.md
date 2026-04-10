@@ -8,7 +8,7 @@ API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connectio
 - 让端点、模型、参数、预设、密钥切换都能跟着连接一起保存和切换
 - 尽量复用 SillyTavern 原生能力，而不是重造一套后端
 
-当前版本：`v1.1.1`
+版本号以 `manifest.json` 为准。
 
 ## 支持的格式
 
@@ -76,7 +76,7 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 
 ### 6. 原生密钥库集成
 
-这是 `v1.1.1` 的重点能力。
+这是当前版本的重点能力。
 
 - 连接现在可以直接绑定 SillyTavern 原生密钥库中的某个 `secretId`
 - 切换连接时，会同步切换对应密钥槽的 active key

@@ -15,6 +15,7 @@
     align-items: center;
     gap: 6px;
     padding: 6px 0;
+    flex-wrap: wrap;
 }
 
 .apihub_brand_name {
@@ -30,6 +31,31 @@
     font-size: calc(var(--mainFontSize) * 0.7);
     color: var(--SmartThemeQuoteColor, #888);
     opacity: 0.5;
+}
+
+.apihub_branding_actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.apihub_migrate_cta {
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-weight: 700;
+    border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--SmartThemeBorderColor));
+    background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 18%, transparent), color-mix(in srgb, #22d3ee 16%, transparent));
+    color: var(--SmartThemeBodyColor);
+    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 22%, transparent);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.apihub_migrate_cta:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.06);
+    box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 38%, transparent);
 }
 
 /* Toggle native/ApiHub button */
@@ -56,6 +82,18 @@
     background: linear-gradient(135deg, color-mix(in srgb, #60a5fa 20%, transparent), color-mix(in srgb, #a78bfa 20%, transparent));
     border-color: #a78bfa;
     color: #e0d4ff;
+}
+
+@media (max-width: 700px) {
+    .apihub_branding_actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: space-between;
+    }
+
+    .apihub_migrate_cta span {
+        white-space: nowrap;
+    }
 }
 
 .apihub_section {
@@ -238,8 +276,8 @@
     border-color: #f87171;
 }
 
-/* Flex utility */
-.flex1 { flex: 1; min-width: 0; }
+/* Flex utility (scoped to ApiHub to avoid overriding ST global .flex1) */
+.apihub .flex1 { min-width: 0; }
 
 /* Collapsible section */
 .apihub_collapsible {
