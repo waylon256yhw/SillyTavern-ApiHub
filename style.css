@@ -45,19 +45,6 @@
     background-clip: text;
 }
 
-.apihub_brand_subline {
-    margin-top: -4px;
-    margin-bottom: 2px;
-    display: flex;
-    justify-content: flex-start;
-}
-
-.apihub_brand_ver {
-    font-size: calc(var(--mainFontSize) * 0.7);
-    color: var(--SmartThemeQuoteColor, #888);
-    opacity: 0.5;
-}
-
 .apihub_migrate_cta {
     display: inline-flex;
     align-items: center;
