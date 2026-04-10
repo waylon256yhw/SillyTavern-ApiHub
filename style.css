@@ -37,10 +37,19 @@
 .apihub_brand_name {
     font-size: calc(var(--mainFontSize) * 1.15);
     font-weight: 800;
+    white-space: nowrap;
+    flex-shrink: 0;
     background: linear-gradient(135deg, #60a5fa, #a78bfa);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+}
+
+.apihub_brand_subline {
+    margin-top: -4px;
+    margin-bottom: 2px;
+    display: flex;
+    justify-content: flex-start;
 }
 
 .apihub_brand_ver {
