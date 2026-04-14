@@ -308,6 +308,124 @@ function matchesActiveConnectionRequest(conn, generateData) {
     return trimTrailingSlash(generateData.reverse_proxy) === expectedBaseUrl;
 }
 
+async function matchesActiveConnectionRuntime(conn) {
+    if (!conn) return false;
+    if (oai_settings.chat_completion_source !== getConnectionRequestSource(conn.format)) return false;
+
+    let currentModel = '';
+    if (conn.format === 'openai') {
+        currentModel = oai_settings.custom_model;
+    } else if (conn.format === 'anthropic') {
+        currentModel = oai_settings.claude_model;
+    } else if (conn.format === 'gemini') {
+        currentModel = oai_settings.google_model;
+    }
+
+    if ((conn.model || '') !== (currentModel || '')) return false;
+
+    const expectedBaseUrl = getConnectionRequestBaseUrl(conn);
+    if (!expectedBaseUrl) return false;
+
+    if (conn.format === 'openai') {
+        if (trimTrailingSlash(oai_settings.custom_url) !== expectedBaseUrl) return false;
+
+        // ApiHub owns CUSTOM additional parameters; if native UI/presets repopulate
+        // them, force a runtime resync before request assembly.
+        if (oai_settings.custom_include_body || oai_settings.custom_exclude_body || oai_settings.custom_include_headers) {
+            return false;
+        }
+    } else if (trimTrailingSlash(oai_settings.reverse_proxy) !== expectedBaseUrl) {
+        return false;
+    }
+
+    const secretKey = getSecretKeyForFormat(conn.format);
+    if (secretKey) {
+        const activeSecret = getActiveSecretEntry(secretKey);
+        if (conn.secretId) {
+            if (activeSecret?.id !== conn.secretId) return false;
+        } else {
+            const activeValue = await findSecret(secretKey);
+            if ((activeValue ?? '') !== (conn.apiKey || '')) return false;
+        }
+    }
+
+    if (conn.format === 'anthropic' || conn.format === 'gemini') {
+        const { apiKey: runtimeApiKey } = await resolveConnectionApiKey(conn);
+        if ((oai_settings.proxy_password || '') !== (runtimeApiKey || '')) return false;
+    }
+
+    return true;
+}
+
+/**
+ * Sync the active connection's source/url/model/key into ST native runtime state
+ * without replaying saved preset/regex/post-processing values.
+ */
+async function syncConnectionRuntime(conn, { markActive = false } = {}) {
+    if (!conn) return;
+    if (markActive) {
+        getSettings().activeConnectionId = conn.id;
+    }
+
+    await syncNativeSecretSlot(conn);
+    const { apiKey: runtimeApiKey } = await resolveConnectionApiKey(conn);
+    const { normalized } = normalizeUrl(conn.endpoint, conn.format);
+    const targetSource = FORMAT_TO_SOURCE[conn.format];
+
+    if (conn.format === 'openai') {
+        oai_settings.custom_url = normalized;
+        oai_settings.custom_model = conn.model;
+    } else if (conn.format === 'anthropic') {
+        oai_settings.reverse_proxy = normalized;
+        oai_settings.proxy_password = runtimeApiKey || '';
+        oai_settings.claude_model = conn.model;
+    } else if (conn.format === 'gemini') {
+        // Don't use normalizeUrl for gemini reverse_proxy — ST's makersuite backend
+        // adds its own /{apiVersion}/ path, so we must pass the raw base URL
+        oai_settings.reverse_proxy = conn.endpoint.replace(/\/+$/, '');
+        oai_settings.proxy_password = runtimeApiKey || '';
+        oai_settings.google_model = conn.model;
+    }
+
+    $('#chat_completion_source').val(targetSource).trigger('change');
+
+    if (conn.format === 'openai') {
+        oai_settings.custom_model = conn.model;
+        $('#custom_model_id').val(conn.model);
+    } else if (conn.format === 'anthropic') {
+        oai_settings.claude_model = conn.model;
+        $('#model_claude_select').val(conn.model);
+    } else if (conn.format === 'gemini') {
+        oai_settings.google_model = conn.model;
+        $('#model_google_select').val(conn.model);
+    }
+
+    // Keep native custom YAML params empty. ApiHub applies exclusions via a unified pre-send hook.
+    oai_settings.custom_include_body = '';
+    oai_settings.custom_exclude_body = '';
+    oai_settings.custom_include_headers = '';
+}
+
+/**
+ * Pre-generation guard: if ST's native runtime has drifted away from the active
+ * ApiHub connection (e.g. after a 429 or other error), repair it before ST
+ * assembles the provider-specific request body.
+ */
+async function repairActiveConnectionBeforeGeneration(_type, _options, isDryRun) {
+    if (nativeUIVisible || isDryRun) return;
+
+    const conn = getActiveConnection();
+    if (!conn || await matchesActiveConnectionRuntime(conn)) return;
+
+    const expectedSource = FORMAT_TO_SOURCE[conn.format];
+    console.warn(
+        `[ApiHub] Pre-generation drift detected (source: ${oai_settings.chat_completion_source}→${expectedSource}, model: ${conn.model}). Repairing.`,
+    );
+
+    await syncConnectionRuntime(conn);
+    saveSettingsDebounced();
+}
+
 /**
  * Apply GUI-selected exclusion keys before ST sends the chat-completions request.
  */
@@ -593,52 +711,10 @@ async function activateConnection(id) {
 
     getSettings().activeConnectionId = id;
 
-    // Keep the native secret slot aligned with the currently selected connection.
-    await syncNativeSecretSlot(conn);
-    const { apiKey: runtimeApiKey } = await resolveConnectionApiKey(conn);
-
     // Apply preset FIRST (before connection fields) — preset may overwrite oai_settings
     // when bind_preset_to_connection is enabled. We reapply our fields after.
     if (conn.preset) await runSlashCommand('preset', conn.preset);
-
-    // Set oai_settings fields based on format (AFTER preset, so we override any preset-bound values)
-    const { normalized } = normalizeUrl(conn.endpoint, conn.format);
-
-    if (conn.format === 'openai') {
-        oai_settings.custom_url = normalized;
-        oai_settings.custom_model = conn.model;
-    } else if (conn.format === 'anthropic') {
-        oai_settings.reverse_proxy = normalized;
-        oai_settings.proxy_password = runtimeApiKey || '';
-        oai_settings.claude_model = conn.model;
-    } else if (conn.format === 'gemini') {
-        // Don't use normalizeUrl for gemini reverse_proxy — ST's makersuite backend
-        // adds its own /{apiVersion}/ path, so we must pass the raw base URL
-        oai_settings.reverse_proxy = conn.endpoint.replace(/\/+$/, '');
-        oai_settings.proxy_password = runtimeApiKey || '';
-        oai_settings.google_model = conn.model;
-    }
-
-    // Trigger source switch — this calls toggleChatCompletionForms(), reconnectOpenAi(), getStatusOpen()
-    const targetSource = FORMAT_TO_SOURCE[conn.format];
-    $('#chat_completion_source').val(targetSource).trigger('change');
-
-    // Re-apply model AFTER source switch (toggleChatCompletionForms may overwrite from native selects)
-    if (conn.format === 'openai') {
-        oai_settings.custom_model = conn.model;
-        $('#custom_model_id').val(conn.model);
-    } else if (conn.format === 'anthropic') {
-        oai_settings.claude_model = conn.model;
-        $('#model_claude_select').val(conn.model);
-    } else if (conn.format === 'gemini') {
-        oai_settings.google_model = conn.model;
-        $('#model_google_select').val(conn.model);
-    }
-
-    // Keep native custom YAML params empty. ApiHub applies exclusions via a unified pre-send hook.
-    oai_settings.custom_include_body = '';
-    oai_settings.custom_exclude_body = '';
-    oai_settings.custom_include_headers = '';
+    await syncConnectionRuntime(conn);
 
     // Apply regex preset only when it actually changes (avoids chat reloads on every edit)
     const currentRegex = await runSlashCommand('regex-preset', '') || '';
@@ -654,22 +730,14 @@ async function activateConnection(id) {
 }
 
 /**
- * Sync the current connection's model to ST native settings and selects.
- * Called on model change/add/delete so Test Message works immediately.
+ * Sync the selected connection into ST runtime without replaying saved
+ * preset/regex/post-processing values. Used for plain model list edits.
  */
-function syncModelToNative(conn) {
+async function syncSelectedConnectionRuntime(conn) {
     if (!conn) return;
-    if (conn.format === 'openai') {
-        oai_settings.custom_model = conn.model;
-        $('#custom_model_id').val(conn.model);
-    } else if (conn.format === 'anthropic') {
-        oai_settings.claude_model = conn.model;
-        $('#model_claude_select').val(conn.model);
-    } else if (conn.format === 'gemini') {
-        oai_settings.google_model = conn.model;
-        $('#model_google_select').val(conn.model);
-    }
+    await syncConnectionRuntime(conn, { markActive: true });
     saveSettingsDebounced();
+    renderUI();
 }
 
 // ── Model fetching ─────────────────────────────────────────────────
@@ -1826,13 +1894,12 @@ function bindEvents() {
         }
     });
 
-    // Model change → activate immediately
+    // Model change → runtime sync without replaying saved preset state
     $('#apihub_model_select').on('change', async function () {
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { model: $(this).val() });
-        syncModelToNative(conn);
-        renderUrlPreview();
+        await syncSelectedConnectionRuntime(conn);
     });
 
     // ── Buttons ──
@@ -1901,16 +1968,14 @@ function bindEvents() {
     $('#apihub_btn_fetch_models').on('click', fetchModels);
 
     // Default models — reset to hardcoded list
-    $('#apihub_btn_default_models').on('click', () => {
+    $('#apihub_btn_default_models').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
         const defaults = DEFAULT_MODELS[conn.format] || [];
         const fmt = getFormatOption(conn.format);
         const newModel = (fmt && defaults.includes(fmt.defaultModel) ? fmt.defaultModel : defaults[0]) || '';
         updateConnection(conn.id, { availableModels: [...defaults], model: newModel });
-        syncModelToNative(conn);
-        renderModelList(conn);
-        renderUrlPreview();
+        await syncSelectedConnectionRuntime(conn);
         if (defaults.length > 0) {
             toastr.success(`已重置为 ${defaults.length} 个默认模型`);
         } else {
@@ -1931,7 +1996,7 @@ function bindEvents() {
     });
 
     // Delete selected model
-    $('#apihub_btn_delete_model').on('click', () => {
+    $('#apihub_btn_delete_model').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
         const selected = $('#apihub_model_select').val();
@@ -1939,9 +2004,7 @@ function bindEvents() {
         conn.availableModels = conn.availableModels.filter(m => m !== selected);
         const newModel = conn.availableModels[0] || '';
         updateConnection(conn.id, { model: newModel });
-        syncModelToNative(conn);
-        renderModelList(conn);
-        renderUrlPreview();
+        await syncSelectedConnectionRuntime(conn);
     });
 
     // Open native key manager
@@ -2028,7 +2091,7 @@ function confirmRename() {
     renderUI();
 }
 
-function confirmAddModel() {
+async function confirmAddModel() {
     const modelName = $('#apihub_add_model_input').val()?.trim();
     const conn = getSelectedConnection();
     if (!modelName || !conn) return;
@@ -2036,10 +2099,8 @@ function confirmAddModel() {
         conn.availableModels.push(modelName);
     }
     updateConnection(conn.id, { model: modelName });
-    syncModelToNative(conn);
     $('#apihub_add_model_row').hide();
-    renderModelList(conn);
-    renderUrlPreview();
+    await syncSelectedConnectionRuntime(conn);
 }
 
 // ── Initialization ─────────────────────────────────────────────────
@@ -2098,6 +2159,9 @@ jQuery(async () => {
 
     // Bind events
     bindEvents();
+
+    // Repair drifted native state before ST assembles the provider-specific request body.
+    eventSource.on(event_types.GENERATION_STARTED, repairActiveConnectionBeforeGeneration);
 
     // Apply ApiHub exclusions right before ST sends chat-completion requests.
     eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, applyActiveConnectionExclusions);
