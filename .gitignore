@@ -1,2 +1,5 @@
 apihub-*.json
 *.jpg
+AGENTS.md
+.codex
+.serena/
