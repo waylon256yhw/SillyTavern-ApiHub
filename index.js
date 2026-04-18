@@ -361,7 +361,7 @@ async function matchesActiveConnectionRuntime(conn) {
  * Sync the active connection's source/url/model/key into ST native runtime state
  * without replaying saved preset/regex/post-processing values.
  */
-async function syncConnectionRuntime(conn, { markActive = false } = {}) {
+async function syncConnectionRuntime(conn, { markActive = false, triggerSourceChange = true } = {}) {
     if (!conn) return;
     if (markActive) {
         getSettings().activeConnectionId = conn.id;
@@ -387,7 +387,13 @@ async function syncConnectionRuntime(conn, { markActive = false } = {}) {
         oai_settings.google_model = conn.model;
     }
 
-    $('#chat_completion_source').val(targetSource).trigger('change');
+    if (triggerSourceChange) {
+        $('#chat_completion_source').val(targetSource).trigger('change');
+    } else {
+        // During live generation repair, avoid replaying ST's source-switch side effects.
+        oai_settings.chat_completion_source = targetSource;
+        $('#chat_completion_source').val(targetSource);
+    }
 
     if (conn.format === 'openai') {
         oai_settings.custom_model = conn.model;
@@ -422,7 +428,7 @@ async function repairActiveConnectionBeforeGeneration(_type, _options, isDryRun)
         `[ApiHub] Pre-generation drift detected (source: ${oai_settings.chat_completion_source}→${expectedSource}, model: ${conn.model}). Repairing.`,
     );
 
-    await syncConnectionRuntime(conn);
+    await syncConnectionRuntime(conn, { triggerSourceChange: false });
     saveSettingsDebounced();
 }
 
