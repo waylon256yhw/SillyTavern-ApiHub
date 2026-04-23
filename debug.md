@@ -331,3 +331,223 @@ await activateConnection(conn.id);
 
 3. 是否有别的扩展、脚本、slash command、profile 流程在改 native source  
    目前 Connection Manager 本身没看到“报错后自动切 last server”的直接证据，但外部链路仍然可能存在。
+
+---
+
+# bug
+
+这次用户反馈的现象不是“迁移出来的连接显示错了”，而是：
+
+1. 迁移后，ApiHub 里确实出现了一条 Anthropic 连接，endpoint 是 `https://clewdr.moonlightyume.com`。
+2. 但 ST 实际请求时使用的仍然是 native UI 里残留的 `https://clawdr.moonlightyume.com/code/v1`。
+3. 也就是说，`ApiHub 已保存的活动连接` 和 `ST 当前原生生效运行态` 在这个 case 里是分离的。
+
+这会表现为：
+
+- 用户在 ApiHub 里看到的连接配置是 `clewdr...`
+- 但真正发请求时走的是 `clawdr.../code/v1`
+- provider 仍然是 `claude`
+- 连模型也没有完全跟随 ApiHub 当前连接
+
+# proposal
+
+当前最可信的根因假设是：
+
+`迁移流程只把连接“导入到 ApiHub 设置里”，但没有保证导入后的活动连接立刻接管 ST 的原生运行态；同时插件初始化恢复时，也没有把已保存的 activeConnection 重新回放到 native runtime。`
+
+更具体地说：
+
+- `activateConnection()` 才是“完整接管”的唯一路径。
+- `migrateFromNative()` 当前只会 `saveSettingsDebounced()` + `renderUI()`，不会自动 `activateConnection()`。
+- `restoreState()` 当前也只做数据清理和 `renderUI()`，不会把已保存的 `activeConnectionId` 同步回 `oai_settings`。
+- 所以只要 native runtime 在迁移前已经是别的 endpoint，迁移完成后即使 ApiHub UI 里已经有了新连接，实际请求仍然可能继续走旧的 native endpoint。
+
+这次 debug 包里最关键的事实是：
+
+- ApiHub 的活动连接已经是 `clewdrhub`
+- 但 native runtime 里的 `reverse_proxy` 仍然是 `clawdr.moonlightyume.com/code/v1`
+- 同时 `claude_model` 也是旧值 `claude-opus-4-6`，而不是活动连接里的 `claude-opus-4-7`
+
+这说明问题不是“只差一个 URL 尾巴”，而是整条 Anthropic 运行态并没有被当前活动连接接管。
+
+## explored proposals
+
+### proposal A: 迁移时 endpoint 本身就导错了
+
+探索结果：`当前 debug 包不能直接证明，但代码里确实存在次级风险`
+
+原因：
+
+- 当前迁移逻辑对 `non-openai + profile.proxy` 的 profile，会优先取 `proxyPreset.url` 作为 endpoint。
+- 如果某些 Anthropic 原生配置里，proxy preset 只是 native UI 的转发端点，而 `api-url` 才是用户真正想保留的上游地址，那么迁移出来的 endpoint 就有可能被导成内部转发地址。
+
+但这次 case 里：
+
+- debug 包中的 ApiHub 连接已经是 `clewdr...`
+- native proxies 里同名 `自用max` 记录却是 `clawdr.../code/v1`
+
+因此当前更稳妥的判断是：
+
+- “当前请求走错地址”这件事，已经可以被“活动连接没有接管运行态”完整解释
+- “迁移时是否还存在错误偏向 proxy URL 的问题”值得继续保留为次级风险，但这份 debug 还不足以单独坐实它就是本次主因
+
+### proposal B: 真正的问题是迁移/恢复后没有接管 native runtime
+
+探索结果：`这是目前最强结论`
+
+原因：
+
+- 这条链可以直接解释为什么 ApiHub 里显示的是 `clewdr...`，但请求仍然发到 `clawdr.../code/v1`
+- 也可以解释为什么连模型都没有同步成活动连接里的 `claude-opus-4-7`
+- 并且它和当前代码路径是一一对应的，不需要再额外假设“还有别的地方偷偷改了 URL”
+
+# evidence
+
+## 1. 当前活动连接和 native runtime 明确不一致
+
+文件：[apihub-debug-1776933064106.json](/root/SillyTavern-ApiHub/apihub-debug-1776933064106.json:223)
+
+调试文件里：
+
+- ApiHub 连接 `自用max` 是 `format: "anthropic"`，endpoint 为 `https://clewdr.moonlightyume.com/`
+- 另一条活动连接 `clewdrhub` 也是 `format: "anthropic"`，endpoint 为 `https://clewdr.moonlightyume.com`
+- `activeConnectionId` 指向的是 `clewdrhub`
+
+但同一个 debug 文件里 native runtime 是：
+
+- `chat_completion_source: "claude"`
+- `reverse_proxy: "https://clawdr.moonlightyume.com/code/v1"`
+- `claude_model: "claude-opus-4-6"`
+
+对应位置见：[apihub-debug-1776933064106.json](/root/SillyTavern-ApiHub/apihub-debug-1776933064106.json:277)
+
+这已经足够说明：
+
+- ApiHub 当前活动连接不是 native runtime 正在使用的那条 Anthropic 配置
+
+## 2. `activateConnection()` 才会完整接管 source / endpoint / model / key
+
+文件：[index.js](/root/SillyTavern-ApiHub/index.js:714)
+
+`activateConnection()` 会：
+
+- 标记 `activeConnectionId`
+- 先应用 preset
+- 再调用 `syncConnectionRuntime(conn)`
+- 最后再应用 regex preset 和 prompt post-processing
+
+而 `syncConnectionRuntime()` 会真正写回：
+
+- `oai_settings.reverse_proxy`
+- `oai_settings.proxy_password`
+- `oai_settings.claude_model`
+- `#chat_completion_source`
+
+也就是说，只有走到这条路径，ST 的原生运行态才会被当前连接完整覆盖。
+
+## 3. `migrateFromNative()` 迁移成功后并不会激活任何连接
+
+文件：[index.js](/root/SillyTavern-ApiHub/index.js:1481)
+
+当前迁移逻辑在导入完成后只做：
+
+- `saveSettingsDebounced()`
+- `renderUI()`
+- `toastr.success(...)`
+
+对应代码见：[index.js](/root/SillyTavern-ApiHub/index.js:1621)
+
+这里没有：
+
+- `activateConnection(...)`
+- `syncConnectionRuntime(...)`
+- 把某条迁移出的连接选中并接管当前原生运行态
+
+因此“迁移出来了，但请求仍然走旧 native endpoint”完全符合当前实现。
+
+## 4. 插件初始化恢复时，也不会把已保存活动连接重新写回 native runtime
+
+文件：[index.js](/root/SillyTavern-ApiHub/index.js:2114)
+
+`restoreState()` 当前只做：
+
+- 首次默认连接初始化
+- 旧字段清理
+- `renderUI()`
+
+它不会：
+
+- 读取 `activeConnectionId`
+- 重新 `activateConnection(activeConnectionId)`
+
+这意味着即使上一次保存的活动连接已经是正确的 `clewdr...`，只要页面刷新或扩展初始化时 native runtime 里还残留 `clawdr.../code/v1`，两边就会继续分离。
+
+## 5. 当前虽然有生成前修复钩子，但它不能替代初始化/迁移接管
+
+文件：[index.js](/root/SillyTavern-ApiHub/index.js:2169)
+
+当前代码确实注册了：
+
+```js
+eventSource.on(event_types.GENERATION_STARTED, repairActiveConnectionBeforeGeneration);
+```
+
+这说明插件作者已经意识到“运行态可能漂移”。
+
+但这次 case 仍然暴露出两个问题：
+
+- steady state 上，UI 和 native runtime 可以长期不一致
+- 用户在真正发起请求前，并不能保证这条修复链一定已经把状态拉齐
+
+因此迁移完成后的“立即接管”与初始化时的“恢复接管”仍然是必要修复。
+
+## 6. 迁移逻辑对 Anthropic `proxy` 的 endpoint 选择仍值得继续审查
+
+文件：[index.js](/root/SillyTavern-ApiHub/index.js:1540)
+
+当前代码在 `format !== 'openai' && profile.proxy` 时，会优先使用：
+
+```js
+const proxyPreset = proxies.find(p => p.name === profile.proxy);
+endpoint = proxyPreset.url.trim();
+```
+
+这意味着：
+
+- 只要 profile 带了 `proxy`
+- 且该 proxy preset 的 URL 不是用户真正想迁移的上游地址
+- ApiHub 就可能把“native 转发端点”误当成最终 endpoint 保存下来
+
+这点和本次用户描述有一定吻合度，但当前 debug 包里还缺“那条被迁移 profile 的原始 api-url / proxy 组合”，所以暂时只能记为次级风险。
+
+# solution
+
+建议按两层处理。
+
+## 第一层：修复迁移后不接管运行态的问题
+
+在 `migrateFromNative()` 成功后：
+
+- 至少应当把第一条或最后一条迁移出的连接选中
+- 并显式调用 `activateConnection(...)`
+
+这样迁移结束时，用户看到的配置和 ST 真正发请求的运行态才能保持一致。
+
+## 第二层：修复初始化恢复时不接管运行态的问题
+
+在 `restoreState()` 完成 `renderUI()` 后：
+
+- 如果存在 `activeConnectionId`
+- 就重新执行一次 `activateConnection(activeConnectionId)`，或者至少 `syncConnectionRuntime(activeConn)`
+
+这样即使刷新页面、重新载入扩展、或者 native runtime 里还残留旧的 endpoint，也能在扩展初始化时把当前活动连接重新接管回来。
+
+## 第三层：继续审查 Anthropic 迁移时的 endpoint 选择策略
+
+如果后续还发现“迁移出来的 endpoint 本身就错了”，优先核对：
+
+1. 原始 CM profile 的 `api-url`
+2. 原始 CM profile 的 `proxy`
+3. 对应 proxy preset 的 `url`
+
+如果 `proxyPreset.url` 是 native 内部转发地址，而 `api-url` 才是用户配置的真实 Anthropic 兼容端点，那么当前“非 openai 且有 proxy 时优先吃 proxy URL”的逻辑就需要收紧。

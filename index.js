@@ -1619,8 +1619,14 @@ async function migrateFromNative() {
     }
 
     if (migrated.length > 0) {
+        const targetConn = migrated[migrated.length - 1];
         saveSettingsDebounced();
         renderUI();
+        $('#apihub_connection_select').val(targetConn.id);
+        renderConnectionDetails();
+        renderUrlPreview();
+        renderCustomParams();
+        await activateConnection(targetConn.id);
         toastr.success(`已迁移 ${migrated.length} 个连接配置：${migrated.map(c => c.name).join('、')}`);
         if (skippedSecretBindings.length > 0) {
             toastr.warning(`以下连接未迁移原生密钥绑定，已保留原有手动/代理密钥：${skippedSecretBindings.join('、')}。只有当前实例允许前端读取原生密钥时，才可自动绑定 secretId。`);
@@ -2040,7 +2046,7 @@ function bindEvents() {
         if (!confirmed) return;
         extension_settings.apiHub = structuredClone(DEFAULT_SETTINGS);
         saveSettingsDebounced();
-        restoreState();
+        await restoreState();
         toastr.success('API Hub 已重置');
     });
 
@@ -2111,7 +2117,7 @@ async function confirmAddModel() {
 
 // ── Initialization ─────────────────────────────────────────────────
 
-function restoreState() {
+async function restoreState() {
     const conns = getConnections();
 
     // Replace legacy single "Default" connection with 3 format-specific presets
@@ -2132,6 +2138,15 @@ function restoreState() {
     }
 
     renderUI();
+
+    const activeId = getActiveConnectionId();
+    if (!activeId || !getConnection(activeId)) return;
+
+    $('#apihub_connection_select').val(activeId);
+    renderConnectionDetails();
+    renderUrlPreview();
+    renderCustomParams();
+    await activateConnection(activeId);
 }
 
 jQuery(async () => {
@@ -2177,7 +2192,7 @@ jQuery(async () => {
     initSecretManagerPatch();
 
     // Restore saved state
-    restoreState();
+    await restoreState();
 
     // Native key manager actions can change the active secret outside ApiHub.
     [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED, event_types.SECRET_DELETED, event_types.SECRET_EDITED].forEach(eventName => {
