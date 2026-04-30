@@ -24,6 +24,7 @@ const MODULE_NAME = 'third-party/SillyTavern-ApiHub';
 const DEFAULT_SETTINGS = {
     connections: [],
     activeConnectionId: null,
+    linkPresetsOnConnectionSwitch: true,
 };
 
 /** Maps our format names to ST's chat_completion_source values */
@@ -72,6 +73,10 @@ function getActiveConnectionId() {
 
 function getActiveConnection() {
     return getConnection(getActiveConnectionId());
+}
+
+function shouldLinkPresetsOnConnectionSwitch() {
+    return getSettings().linkPresetsOnConnectionSwitch !== false;
 }
 
 function getSelectedConnectionId() {
@@ -574,7 +579,7 @@ async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhen
     const nextApiKey = secretValue !== null ? secretValue : '';
     if (conn.secretId === activeSecret.id && (secretValue === null || conn.apiKey === nextApiKey)) {
         if (activateIfActive && getActiveConnectionId() === connectionId) {
-            await activateConnection(connectionId);
+            await activateConnectionForCurrentMode(connectionId);
         } else if (getSelectedConnectionId() === connectionId) {
             renderConnectionDetails();
         }
@@ -594,7 +599,7 @@ async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhen
 
     updateConnection(connectionId, partial);
     if (activateIfActive && getActiveConnectionId() === connectionId) {
-        await activateConnection(connectionId);
+        await activateConnectionForCurrentMode(connectionId);
     } else if (getSelectedConnectionId() === connectionId) {
         renderConnectionDetails();
     }
@@ -735,6 +740,18 @@ async function activateConnection(id) {
     renderUI();
 }
 
+async function activateConnectionForCurrentMode(id) {
+    const conn = getConnection(id);
+    if (!conn) return;
+
+    if (shouldLinkPresetsOnConnectionSwitch()) {
+        await activateConnection(id);
+        return;
+    }
+
+    await syncSelectedConnectionRuntime(conn);
+}
+
 /**
  * Sync the selected connection into ST runtime without replaying saved
  * preset/regex/post-processing values. Used for plain model list edits.
@@ -791,7 +808,7 @@ async function fetchModels() {
         const isOfficialGemini = conn.format === 'gemini' && conn.endpoint.includes('googleapis.com');
 
         if (isOfficialGemini) {
-            await activateConnection(conn.id);
+            await activateConnectionForCurrentMode(conn.id);
             await fetchModelsViaNativeConnect(conn);
             cleanup();
             renderUI();
@@ -1626,7 +1643,7 @@ async function migrateFromNative() {
         renderConnectionDetails();
         renderUrlPreview();
         renderCustomParams();
-        await activateConnection(targetConn.id);
+        await activateConnectionForCurrentMode(targetConn.id);
         toastr.success(`已迁移 ${migrated.length} 个连接配置：${migrated.map(c => c.name).join('、')}`);
         if (skippedSecretBindings.length > 0) {
             toastr.warning(`以下连接未迁移原生密钥绑定，已保留原有手动/代理密钥：${skippedSecretBindings.join('、')}。只有当前实例允许前端读取原生密钥时，才可自动绑定 secretId。`);
@@ -1642,9 +1659,14 @@ async function migrateFromNative() {
 
 function renderUI() {
     renderConnectionSelect();
+    renderPresetLinkSetting();
     renderConnectionDetails();
     renderUrlPreview();
     renderCustomParams();
+}
+
+function renderPresetLinkSetting() {
+    $('#apihub_link_presets').prop('checked', shouldLinkPresetsOnConnectionSwitch());
 }
 
 function renderConnectionSelect() {
@@ -1848,7 +1870,12 @@ function bindEvents() {
         renderConnectionDetails();
         renderUrlPreview();
         renderCustomParams();
-        await activateConnection(conn.id);
+        await activateConnectionForCurrentMode(conn.id);
+    });
+
+    $('#apihub_link_presets').on('change', function () {
+        getSettings().linkPresetsOnConnectionSwitch = !!$(this).prop('checked');
+        saveSettingsDebounced();
     });
 
     // Format change → activate immediately
@@ -1866,7 +1893,7 @@ function bindEvents() {
         });
         renderConnectionDetails();
         renderUrlPreview();
-        await activateConnection(conn.id);
+        await activateConnectionForCurrentMode(conn.id);
     });
 
     // Endpoint input → live preview + debounced activate
@@ -1879,7 +1906,7 @@ function bindEvents() {
         renderUrlPreview();
         // Debounce activation to avoid thrashing on every keystroke
         clearTimeout(endpointActivateTimer);
-        endpointActivateTimer = setTimeout(() => activateConnection(conn.id), 600);
+        endpointActivateTimer = setTimeout(() => activateConnectionForCurrentMode(conn.id), 600);
     });
 
     // API key input → debounced activate
@@ -1890,7 +1917,7 @@ function bindEvents() {
         if (!conn) return;
         updateConnection(conn.id, { apiKey: $(this).val(), secretId: '' });
         clearTimeout(keyActivateTimer);
-        keyActivateTimer = setTimeout(() => activateConnection(conn.id), 600);
+        keyActivateTimer = setTimeout(() => activateConnectionForCurrentMode(conn.id), 600);
     });
 
     // Toggle key visibility
@@ -1962,7 +1989,7 @@ function bindEvents() {
         conn.preset = currentPresets.preset;
         conn.regexPreset = currentPresets.regexPreset;
         conn.promptPostProcessing = currentPresets.promptPostProcessing;
-        await activateConnection(conn.id);
+        await activateConnectionForCurrentMode(conn.id);
         toastr.success('连接配置已保存并激活');
     });
 
@@ -2146,7 +2173,8 @@ async function restoreState() {
     renderConnectionDetails();
     renderUrlPreview();
     renderCustomParams();
-    await activateConnection(activeId);
+    await syncConnectionRuntime(getConnection(activeId), { markActive: true });
+    renderUI();
 }
 
 jQuery(async () => {
@@ -2214,7 +2242,7 @@ jQuery(async () => {
             if (!selected) return;
             if (getSecretKeyForFormat(selected.format) !== key) return;
             if (selected.id === getActiveConnectionId() && selected.secretId) {
-                await activateConnection(selected.id);
+                await activateConnectionForCurrentMode(selected.id);
                 return;
             }
             renderConnectionDetails();

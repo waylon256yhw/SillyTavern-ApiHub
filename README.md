@@ -5,7 +5,7 @@ API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connectio
 核心目标很简单：
 
 - 用 `OpenAI Compatible / Anthropic / Google Gemini` 三种协议视角管理连接
-- 让端点、模型、参数、预设、密钥切换都能跟着连接一起保存和切换
+- 让端点、模型、参数、预设、密钥状态能跟着连接保存，并按需联动切换
 - 尽量复用 SillyTavern 原生能力，而不是重造一套后端
 
 版本号以 `manifest.json` 为准。
@@ -42,7 +42,7 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 - 多连接配置，切换即生效
 - 每个连接独立保存端点、模型、排除参数、密钥信息
 - 支持新建、重命名、复制、删除
-- 保存时会快照当前预设状态
+- 保存时会快照当前预设状态，供“联动预设”模式使用
 
 ### 2. 三种协议格式统一处理
 
@@ -64,15 +64,19 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 - 勾选后在发送前从请求体顶层移除
 - 对 OpenAI Compatible / Anthropic / Gemini 三种格式统一生效
 
-### 5. 预设联动
+### 5. 预设联动 / 独立模式
 
-切换连接时会联动切换：
+连接会保存当前预设组合：
 
 - Chat Completion Preset
 - Regex Preset
 - Prompt Post-Processing
 
-行为上尽量贴近原生 Connection Profile，但配置入口更集中。
+默认开启“联动预设”，切换连接时会一起切换上述预设组合，行为上尽量贴近原生 Connection Profile，但配置入口更集中。
+
+如果关闭“联动预设”，切换连接时只同步 API 格式、端点、模型、密钥和参数排除，不改变当前预设组合。页面刷新恢复活动连接时也只恢复 API 运行状态，不会强制把预设切回连接保存的值。
+
+这个设置只控制 API Hub 的“切连接时是否带预设”行为，不接管 SillyTavern 原生 `Bind presets to API connections` 的“切预设时是否带 API”行为。
 
 ### 6. 原生密钥库集成
 
@@ -181,7 +185,7 @@ SillyTavern 默认不允许前端读取原生密钥明文。不开启时：
 并且你希望：
 
 - 用统一界面管理多个连接
-- 让连接切换时自动带上模型、预设、密钥状态
+- 让连接切换时自动带上模型、密钥状态，并可选择是否联动预设
 - 顺手管理 SillyTavern 原生密钥库
 
 那么 API Hub 现在已经可以作为正式可用版本使用和分享。

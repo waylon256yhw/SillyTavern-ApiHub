@@ -221,6 +221,23 @@
     margin-left: 4px;
 }
 
+.apihub_option_toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    color: var(--SmartThemeBodyColor);
+    font-size: calc(var(--mainFontSize) * 0.85);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.apihub_option_toggle input {
+    margin: 0;
+    cursor: pointer;
+}
+
 /* Key vault chips */
 .apihub_chips {
     display: flex;
