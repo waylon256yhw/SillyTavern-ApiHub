@@ -212,6 +212,7 @@ async function createConnection(name, format) {
         model: '',
         availableModels: [],
         excludeBody: [],          // string[] — parameter names to exclude
+        includeBody: '',
         preset: currentPresets.preset,
         regexPreset: currentPresets.regexPreset,
         promptPostProcessing: currentPresets.promptPostProcessing,
@@ -239,6 +240,7 @@ function createPresetConnection(name, format) {
         model: fmt.defaultModel,
         availableModels: [...fmt.defaultModels],
         excludeBody: [],
+        includeBody: '',
         status: 'idle',
         statusMessage: '',
     };
@@ -336,7 +338,7 @@ async function matchesActiveConnectionRuntime(conn) {
 
         // ApiHub owns CUSTOM additional parameters; if native UI/presets repopulate
         // them, force a runtime resync before request assembly.
-        if (oai_settings.custom_include_body || oai_settings.custom_exclude_body || oai_settings.custom_include_headers) {
+        if ((oai_settings.custom_include_body || '') !== (conn.includeBody || '') || oai_settings.custom_exclude_body || oai_settings.custom_include_headers) {
             return false;
         }
     } else if (trimTrailingSlash(oai_settings.reverse_proxy) !== expectedBaseUrl) {
@@ -412,7 +414,7 @@ async function syncConnectionRuntime(conn, { markActive = false, triggerSourceCh
     }
 
     // Keep native custom YAML params empty. ApiHub applies exclusions via a unified pre-send hook.
-    oai_settings.custom_include_body = '';
+    oai_settings.custom_include_body = conn.includeBody || '';
     oai_settings.custom_exclude_body = '';
     oai_settings.custom_include_headers = '';
 }
@@ -943,18 +945,28 @@ function openNativeKeyManager(format) {
 
 // ── Import / Export ────────────────────────────────────────────────
 
-function exportConnections() {
-    const data = getConnections().map(c => {
+async function exportConnections() {
+    toastr.info('正在解析并导出全量数据...', '导出');
+    const data = [];
+    for (const c of getConnections()) {
         const clean = { ...c };
-        return clean;
-    });
+        if (clean.secretId) {
+            const { apiKey } = await resolveConnectionApiKey(clean);
+            if (apiKey) {
+                clean.apiKey = apiKey;
+            }
+            clean.secretId = '';
+        }
+        data.push(clean);
+    }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `apihub-backup-${Date.now()}.json`;
+    a.download = `apihub-full-backup-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    toastr.success('全量导出完成！');
 }
 
 function importConnections() {
@@ -991,7 +1003,7 @@ function importConnections() {
                 c.model = c.model || '';
                 c.availableModels = Array.isArray(c.availableModels) ? c.availableModels : [];
                 c.excludeBody = Array.isArray(c.excludeBody) ? c.excludeBody : [];
-                delete c.includeBody;
+                c.includeBody = typeof c.includeBody === 'string' ? c.includeBody : '';
                 delete c.includeHeaders;
                 c.preset = c.preset || '';
                 c.regexPreset = c.regexPreset || '';
@@ -1528,6 +1540,7 @@ async function migrateFromNative() {
             model: model || '',
             availableModels: model ? [model] : [],
             excludeBody: [],
+            includeBody: '',
             status: 'idle',
             statusMessage: '',
         };
@@ -1777,7 +1790,9 @@ function renderCustomParams(conn) {
 
     // Ensure arrays exist (migration for old connections)
     conn.excludeBody = conn.excludeBody || [];
+    conn.includeBody = conn.includeBody || '';
     renderExcludeBody(conn);
+    $('#apihub_include_body').val(conn.includeBody);
 }
 
 function renderExcludeBody(conn) {
@@ -2108,6 +2123,15 @@ function bindEvents() {
         }
         saveSettingsDebounced();
     });
+
+    // Include body textarea
+    $('#apihub_include_body').on('input', function () {
+        const conn = getSelectedConnection();
+        if (!conn) return;
+        updateConnection(conn.id, { includeBody: $(this).val() });
+        clearTimeout(window.apihubIncludeBodyTimer);
+        window.apihubIncludeBodyTimer = setTimeout(() => activateConnectionForCurrentMode(conn.id), 600);
+    });
 }
 
 // ── Inline action helpers ──────────────────────────────────────────
@@ -2160,7 +2184,7 @@ async function restoreState() {
     // Cleanup legacy fields from old versions.
     for (const conn of conns) {
         conn.excludeBody = Array.isArray(conn.excludeBody) ? conn.excludeBody : [];
-        delete conn.includeBody;
+        conn.includeBody = typeof conn.includeBody === 'string' ? conn.includeBody : '';
         delete conn.includeHeaders;
     }
 
