@@ -850,7 +850,7 @@ async function fetchModels() {
             const result = await response.json();
             const rawModels = result?.data || [];
             const models = Array.isArray(rawModels)
-                ? rawModels.map(m => m.id || m.name || String(m)).filter(Boolean)
+                ? rawModels.map(m => m.id || m.name || String(m)).filter(Boolean).sort((a, b) => a.localeCompare(b))
                 : [];
 
             if (models.length > 0) {
@@ -1725,16 +1725,18 @@ function renderModelList(conn) {
     const select = $('#apihub_model_select');
     select.empty();
 
-    if (conn.availableModels.length === 0) {
+    const sortedModels = [...conn.availableModels].sort((a, b) => a.localeCompare(b));
+
+    if (sortedModels.length === 0) {
         select.append($('<option>', { value: '', text: '输入模型名或 Fetch 拉取', disabled: true, selected: true }));
     }
 
-    for (const m of conn.availableModels) {
+    for (const m of sortedModels) {
         select.append($('<option>', { value: m, text: m }));
     }
 
     // Select current model
-    if (conn.model && conn.availableModels.includes(conn.model)) {
+    if (conn.model && sortedModels.includes(conn.model)) {
         select.val(conn.model);
     } else if (conn.model) {
         select.prepend($('<option>', { value: conn.model, text: conn.model }));
@@ -1742,7 +1744,7 @@ function renderModelList(conn) {
     }
 
     // Show/hide delete button based on model count
-    $('#apihub_btn_delete_model').toggle(conn.availableModels.length > 0);
+    $('#apihub_btn_delete_model').toggle(sortedModels.length > 0);
 }
 
 function renderUrlPreview() {
