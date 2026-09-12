@@ -8,7 +8,7 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, chat_completion_sources, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders, eventSource, event_types } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret, findSecret, rotateSecret, renameSecret, secret_state, deleteSecret } from '../../../secrets.js';
+import { SECRET_KEYS, writeSecret, rotateSecret, renameSecret, secret_state, deleteSecret, canViewSecrets } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
@@ -52,6 +52,9 @@ let pendingSecretBinding = null;
 let pendingSecretBindingToken = 0;
 const bulkSecretSelections = new Map();
 let secretManagerObserver = null;
+let secretExposureEnabled = null;
+let secretExposureCheckPromise = null;
+let secretExposureNoticeShown = false;
 
 // ── Settings helpers ───────────────────────────────────────────────
 
@@ -128,6 +131,38 @@ function clearSecretCachesForKey(secretKey) {
             secretValueCache.delete(cacheKey);
         }
     }
+}
+
+async function ensureSecretExposureStatus({ notify = false } = {}) {
+    if (secretExposureEnabled === null) {
+        if (!secretExposureCheckPromise) {
+            secretExposureCheckPromise = canViewSecrets()
+                .then(allowed => {
+                    secretExposureEnabled = allowed === true;
+                    if (notify && allowed === false && !secretExposureNoticeShown) {
+                        secretExposureNoticeShown = true;
+                        toastr.warning('未开启 allowKeysExposure。API Hub 将保留密钥槽功能，但不会读取密钥明文。');
+                    }
+                    return secretExposureEnabled;
+                })
+                .catch(() => {
+                    secretExposureEnabled = false;
+                    return false;
+                })
+                .finally(() => {
+                    secretExposureCheckPromise = null;
+                });
+        }
+
+        await secretExposureCheckPromise;
+    }
+
+    if (notify && secretExposureEnabled === false && !secretExposureNoticeShown) {
+        secretExposureNoticeShown = true;
+        toastr.warning('未开启 allowKeysExposure。API Hub 将保留密钥槽功能，但不会读取密钥明文。');
+    }
+
+    return secretExposureEnabled === true;
 }
 
 function countOpenDialogs() {
@@ -349,8 +384,8 @@ async function matchesActiveConnectionRuntime(conn) {
         if (conn.secretId) {
             if (activeSecret?.id !== conn.secretId) return false;
         } else {
-            const activeValue = await findSecret(secretKey);
-            if ((activeValue ?? '') !== (conn.apiKey || '')) return false;
+            const { value: activeValue, status } = await fetchSecretValue(secretKey);
+            if (status !== 403 && status !== null && (activeValue ?? '') !== (conn.apiKey || '')) return false;
         }
     }
 
@@ -533,6 +568,11 @@ async function readCurrentPresets() {
 }
 
 async function fetchSecretValue(secretKey, secretId) {
+    const canRead = await ensureSecretExposureStatus();
+    if (!canRead) {
+        return { value: null, status: 403 };
+    }
+
     try {
         const response = await fetch('/api/secrets/find', {
             method: 'POST',
@@ -705,8 +745,13 @@ async function syncNativeSecretSlot(conn) {
     const cachedValue = syncedSecretValues.get(secretKey);
 
     if (!desiredValue) {
-        const activeValue = await findSecret(secretKey);
+        const { value: activeValue, status } = await fetchSecretValue(secretKey);
         if (activeValue === '') {
+            syncedSecretValues.set(secretKey, '');
+            return;
+        }
+
+        if (status === 403) {
             syncedSecretValues.set(secretKey, '');
             return;
         }
@@ -745,7 +790,8 @@ async function syncNativeSecretSlot(conn) {
         return;
     }
 
-    const activeValue = await findSecret(secretKey);
+    const { value: activeValue } = await fetchSecretValue(secretKey);
+
     if (activeValue !== null && activeValue === desiredValue) {
         syncedSecretValues.set(secretKey, desiredValue);
         return;
@@ -2261,6 +2307,9 @@ jQuery(async () => {
 
     // Patch the native secret manager with bulk tools.
     initSecretManagerPatch();
+
+    // Check key exposure once at startup so later secret reads can fail locally.
+    await ensureSecretExposureStatus({ notify: true });
 
     // Restore saved state
     await restoreState();
