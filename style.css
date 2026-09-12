@@ -542,7 +542,7 @@
 .apihub_model_search {
     width: 100%;
     min-width: 0;
-    padding-left: 34px;
+    padding-left: 10px;
     padding-right: 34px;
 }
 
@@ -552,14 +552,6 @@
 .apihub_model_search::-webkit-search-results-decoration {
     -webkit-appearance: none;
     display: none;
-}
-
-.apihub_model_search_icon {
-    position: absolute;
-    left: 12px;
-    z-index: 1;
-    color: var(--SmartThemeQuoteColor, #888);
-    pointer-events: none;
 }
 
 .apihub_model_search_clear {
