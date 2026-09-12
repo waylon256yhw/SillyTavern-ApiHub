@@ -90,6 +90,9 @@ function getSelectedConnection() {
     return getConnection(getSelectedConnectionId());
 }
 
+let modelPickerQuery = '';
+let modelPickerAddVisible = false;
+
 function getSecretKeyForFormat(format) {
     return FORMAT_TO_SECRET[format];
 }
@@ -880,13 +883,13 @@ async function fetchModels() {
     // Show loading state on fetch button
     const fetchBtn = $('#apihub_btn_fetch_models');
     const originalHtml = fetchBtn.html();
-    fetchBtn.html('<i class="fa-solid fa-spinner fa-spin"></i> 拉取中...').css('pointer-events', 'none');
+    fetchBtn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i> 拉取中...');
 
     const cleanup = () => {
         clearTimeout(timeoutId);
         if (fetchId === myFetchId) {
             fetchAbortController = null;
-            fetchBtn.html(originalHtml).css('pointer-events', '');
+            fetchBtn.prop('disabled', false).html(originalHtml);
         }
     };
 
@@ -1798,7 +1801,7 @@ function renderConnectionDetails() {
         : (activeSecretLabel ? `密钥库: ${activeSecretLabel}` : 'sk-...');
     $('#apihub_apikey').val(conn.secretId ? '' : conn.apiKey).attr('placeholder', placeholder);
 
-    // Model select
+    // Model picker
     renderModelList(conn);
 
     // Active badge — always show since switch = activate
@@ -1809,29 +1812,131 @@ function renderModelList(conn) {
     conn = conn || getSelectedConnection();
     if (!conn) return;
 
-    const select = $('#apihub_model_select');
-    select.empty();
+    $('#apihub_model_value').text(conn.model || '选择模型').attr('title', conn.model || '');
+    renderModelPicker(conn);
+}
 
-    const sortedModels = [...conn.availableModels].sort((a, b) => a.localeCompare(b));
+function getModelPickerModels(conn) {
+    const models = new Set(Array.isArray(conn.availableModels) ? conn.availableModels : []);
+    if (conn.model) models.add(conn.model);
+    return [...models].sort((a, b) => a.localeCompare(b));
+}
 
-    if (sortedModels.length === 0) {
-        select.append($('<option>', { value: '', text: '输入模型名或 Fetch 拉取', disabled: true, selected: true }));
+function renderModelPicker(conn) {
+    const dialog = document.getElementById('apihub_model_dialog');
+    if (!dialog || !conn) return;
+
+    const allModels = getModelPickerModels(conn);
+    const query = modelPickerQuery.trim().toLocaleLowerCase();
+    const filteredModels = query
+        ? allModels.filter(model => model.toLocaleLowerCase().includes(query))
+        : allModels;
+
+    $('#apihub_model_count').text(allModels.length ? allModels.length + ' 个模型' : '暂无模型');
+    $('#apihub_model_search_clear').toggle(Boolean(modelPickerQuery));
+
+    const list = $('#apihub_model_list').empty();
+    for (const model of filteredModels) {
+        const isSelected = model === conn.model;
+        const canDelete = Array.isArray(conn.availableModels) && conn.availableModels.includes(model);
+        const row = $('<div>', {
+            class: 'apihub_model_option_row' + (isSelected ? ' is-selected' : ''),
+            role: 'listitem',
+        });
+        const selectButton = $('<button>', {
+            type: 'button',
+            class: 'apihub_model_option',
+            title: model,
+            'aria-pressed': isSelected,
+        });
+        selectButton.append($('<span>', { class: 'apihub_model_option_name', text: model }));
+        if (isSelected) {
+            selectButton.append($('<i>', {
+                class: 'fa-solid fa-check apihub_model_option_check',
+                'aria-hidden': 'true',
+            }));
+        }
+        selectButton.on('click', async () => selectModelFromPicker(model));
+        row.append(selectButton);
+
+        if (canDelete) {
+            const deleteButton = $('<button>', {
+                type: 'button',
+                class: 'apihub_model_delete',
+                title: '删除 ' + model,
+                'aria-label': '删除 ' + model,
+            });
+            deleteButton.append($('<i>', { class: 'fa-solid fa-trash-can', 'aria-hidden': 'true' }));
+            deleteButton.on('click', async (event) => {
+                event.stopPropagation();
+                await deleteModelFromPicker(model);
+            });
+            row.append(deleteButton);
+        } else {
+            row.append($('<span>', { class: 'apihub_model_delete_spacer', 'aria-hidden': 'true' }));
+        }
+        list.append(row);
     }
 
-    for (const m of sortedModels) {
-        select.append($('<option>', { value: m, text: m }));
+    $('#apihub_model_empty').toggle(filteredModels.length === 0);
+    $('#apihub_model_empty').text(modelPickerQuery ? '没有匹配的模型' : '暂无模型，请 Fetch 或手动添加');
+    $('#apihub_add_model_row').toggle(modelPickerAddVisible);
+}
+
+function openModelPicker() {
+    const conn = getSelectedConnection();
+    const dialog = document.getElementById('apihub_model_dialog');
+    if (!conn || !dialog) return;
+
+    if (dialog.open) {
+        closeModelPicker();
+        return;
     }
 
-    // Select current model
-    if (conn.model && sortedModels.includes(conn.model)) {
-        select.val(conn.model);
-    } else if (conn.model) {
-        select.prepend($('<option>', { value: conn.model, text: conn.model }));
-        select.val(conn.model);
-    }
+    modelPickerQuery = '';
+    modelPickerAddVisible = false;
+    $('#apihub_model_search').val('');
+    renderModelPicker(conn);
+    $('#apihub_model_trigger').attr('aria-expanded', 'true');
 
-    // Show/hide delete button based on model count
-    $('#apihub_btn_delete_model').toggle(sortedModels.length > 0);
+    if (!dialog.open) {
+        if (typeof dialog.showModal === 'function') dialog.showModal();
+        else dialog.setAttribute('open', '');
+    }
+    window.setTimeout(() => $('#apihub_model_search').trigger('focus'), 0);
+}
+
+function closeModelPicker() {
+    const dialog = document.getElementById('apihub_model_dialog');
+    if (dialog?.open) dialog.close();
+    $('#apihub_model_trigger').attr('aria-expanded', 'false');
+    modelPickerQuery = '';
+    modelPickerAddVisible = false;
+    if (!nativeUIVisible) {
+        window.setTimeout(() => $('#apihub_model_trigger').trigger('focus'), 0);
+    }
+}
+
+async function selectModelFromPicker(model) {
+    const conn = getSelectedConnection();
+    if (!conn) return;
+
+    updateConnection(conn.id, { model });
+    closeModelPicker();
+    await syncSelectedConnectionRuntime(conn);
+}
+
+async function deleteModelFromPicker(model) {
+    const conn = getSelectedConnection();
+    if (!conn || !conn.availableModels.includes(model)) return;
+
+    const availableModels = conn.availableModels.filter(entry => entry !== model);
+    const nextModel = conn.model === model
+        ? getModelPickerModels({ ...conn, availableModels, model: '' })[0] || ''
+        : conn.model;
+    updateConnection(conn.id, { availableModels, model: nextModel });
+    await syncSelectedConnectionRuntime(conn);
+    renderModelPicker(getSelectedConnection());
 }
 
 function renderUrlPreview() {
@@ -1886,7 +1991,8 @@ function applyNativeUIVisibility() {
 
     if (nativeUIVisible) {
         // Show native, hide ApiHub content (keep branding bar visible for toggle)
-        $('#apihub_container').children().not('.apihub_branding').hide();
+        closeModelPicker();
+        $('#apihub_container').children().not('.apihub_branding, .apihub_model_dialog').hide();
         sourceSelect.prevAll('h4').first().show();
         sourceSelect.show();
         $('#openai_reverse_proxy').closest('.inline-drawer').show();
@@ -1898,7 +2004,7 @@ function applyNativeUIVisibility() {
         sourceSelect.trigger('change');
     } else {
         // Show ApiHub, hide native
-        $('#apihub_container').children().show();
+        $('#apihub_container').children().not('.apihub_model_dialog').show();
         // Re-hide inline rows and collapsed panels that should only show on interaction
         $('#apihub_rename_row, #apihub_new_row, #apihub_add_model_row').hide();
         if (!$('#apihub_params_toggle .apihub_collapse_icon').hasClass('open')) {
@@ -2022,12 +2128,28 @@ function bindEvents() {
         }
     });
 
-    // Model change → runtime sync without replaying saved preset state
-    $('#apihub_model_select').on('change', async function () {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        updateConnection(conn.id, { model: $(this).val() });
-        await syncSelectedConnectionRuntime(conn);
+    // Model picker
+    $('#apihub_model_trigger').on('click', openModelPicker);
+    $('#apihub_model_close').on('click', closeModelPicker);
+    $('#apihub_model_dialog').on('cancel', (event) => {
+        event.preventDefault();
+        closeModelPicker();
+    });
+    $('#apihub_model_dialog').on('close', () => {
+        $('#apihub_model_trigger').attr('aria-expanded', 'false');
+    });
+    $('#apihub_model_dialog').on('click', function (event) {
+        if (event.target === this) closeModelPicker();
+    });
+    $('#apihub_model_search').on('input', function () {
+        modelPickerQuery = $(this).val() || '';
+        renderModelPicker(getSelectedConnection());
+        $(this).trigger('focus');
+    });
+    $('#apihub_model_search_clear').on('click', () => {
+        modelPickerQuery = '';
+        renderModelPicker(getSelectedConnection());
+        $('#apihub_model_search').trigger('focus');
     });
 
     // ── Buttons ──
@@ -2113,26 +2235,21 @@ function bindEvents() {
 
     // Add model manually
     $('#apihub_btn_add_model').on('click', () => {
-        $('#apihub_add_model_row').show();
+        modelPickerAddVisible = true;
+        renderModelPicker(getSelectedConnection());
         $('#apihub_add_model_input').val('').focus();
     });
     $('#apihub_add_model_ok').on('click', confirmAddModel);
-    $('#apihub_add_model_cancel').on('click', () => $('#apihub_add_model_row').hide());
+    $('#apihub_add_model_cancel').on('click', () => {
+        modelPickerAddVisible = false;
+        renderModelPicker(getSelectedConnection());
+    });
     $('#apihub_add_model_input').on('keydown', (e) => {
         if (e.key === 'Enter') confirmAddModel();
-        if (e.key === 'Escape') $('#apihub_add_model_row').hide();
-    });
-
-    // Delete selected model
-    $('#apihub_btn_delete_model').on('click', async () => {
-        const conn = getSelectedConnection();
-        if (!conn) return;
-        const selected = $('#apihub_model_select').val();
-        if (!selected) return;
-        conn.availableModels = conn.availableModels.filter(m => m !== selected);
-        const newModel = conn.availableModels[0] || '';
-        updateConnection(conn.id, { model: newModel });
-        await syncSelectedConnectionRuntime(conn);
+        if (e.key === 'Escape') {
+            modelPickerAddVisible = false;
+            renderModelPicker(getSelectedConnection());
+        }
     });
 
     // Open native key manager
@@ -2223,12 +2340,14 @@ async function confirmAddModel() {
     const modelName = $('#apihub_add_model_input').val()?.trim();
     const conn = getSelectedConnection();
     if (!modelName || !conn) return;
+    conn.availableModels = Array.isArray(conn.availableModels) ? conn.availableModels : [];
     if (!conn.availableModels.includes(modelName)) {
         conn.availableModels.push(modelName);
     }
     updateConnection(conn.id, { model: modelName });
-    $('#apihub_add_model_row').hide();
+    modelPickerAddVisible = false;
     await syncSelectedConnectionRuntime(conn);
+    renderModelPicker(getSelectedConnection());
 }
 
 // ── Initialization ─────────────────────────────────────────────────

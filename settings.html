@@ -107,26 +107,62 @@
 
     <!-- Models -->
     <div class="apihub_section">
-        <div class="apihub_label_row">
+        <div class="apihub_label_row apihub_model_label_row">
             <label class="apihub_label">Model</label>
-            <div class="apihub_label_actions">
-                <span id="apihub_btn_add_model" class="apihub_link">+ Add</span>
-                <span id="apihub_btn_delete_model" class="apihub_link" style="display:none;"><i class="fa-solid fa-xmark"></i> Delete</span>
-                <span id="apihub_btn_fetch_models" class="apihub_link"><i class="fa-solid fa-rotate"></i> Fetch</span>
-                <span id="apihub_btn_default_models" class="apihub_link"><i class="fa-solid fa-bars"></i> Default</span>
-            </div>
         </div>
-        <select id="apihub_model_select" class="text_pole"></select>
+        <button id="apihub_model_trigger" type="button" class="apihub_model_trigger" aria-haspopup="dialog" aria-expanded="false">
+            <span id="apihub_model_value" class="apihub_model_value">选择模型</span>
+            <i class="fa-solid fa-chevron-down apihub_model_trigger_caret" aria-hidden="true"></i>
+        </button>
     </div>
 
-    <!-- Inline add model -->
-    <div id="apihub_add_model_row" class="apihub_section" style="display:none;">
-        <div class="apihub_inline_row">
-            <input id="apihub_add_model_input" type="text" class="text_pole" placeholder="Model ID (e.g. gpt-4o)" />
-            <div id="apihub_add_model_ok" class="menu_button menu_button_icon"><i class="fa-solid fa-check"></i></div>
-            <div id="apihub_add_model_cancel" class="menu_button menu_button_icon"><i class="fa-solid fa-xmark"></i></div>
+    <!-- Model picker -->
+    <dialog id="apihub_model_dialog" class="apihub_model_dialog">
+        <div class="apihub_model_dialog_header">
+            <div class="apihub_model_dialog_title_group">
+                <h3>选择模型</h3>
+                <span id="apihub_model_count" class="apihub_model_count"></span>
+            </div>
+            <button id="apihub_model_close" type="button" class="apihub_icon_button" title="关闭模型选择器" aria-label="关闭模型选择器">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
         </div>
-    </div>
+
+        <div class="apihub_model_toolbar">
+            <div class="apihub_model_search_wrap">
+                <i class="fa-solid fa-magnifying-glass apihub_model_search_icon" aria-hidden="true"></i>
+                <input id="apihub_model_search" type="search" class="text_pole apihub_model_search" placeholder="搜索模型..." autocomplete="off" aria-label="搜索模型" />
+                <button id="apihub_model_search_clear" type="button" class="apihub_model_search_clear" title="清除搜索" aria-label="清除搜索" style="display:none;">
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+
+        <div id="apihub_model_list" class="apihub_model_list" role="listbox" aria-label="模型列表"></div>
+        <div id="apihub_model_empty" class="apihub_model_empty" style="display:none;">没有匹配的模型</div>
+
+        <div id="apihub_add_model_row" class="apihub_model_add_row" style="display:none;">
+            <input id="apihub_add_model_input" type="text" class="text_pole" placeholder="模型 ID，例如 gpt-4o" autocomplete="off" />
+            <button id="apihub_add_model_ok" type="button" class="apihub_dialog_action apihub_dialog_action_primary" title="添加模型">
+                <i class="fa-solid fa-check" aria-hidden="true"></i><span>添加</span>
+            </button>
+            <button id="apihub_add_model_cancel" type="button" class="apihub_dialog_action" title="取消添加">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i><span>取消</span>
+            </button>
+        </div>
+
+        <div class="apihub_model_dialog_footer">
+            <button id="apihub_btn_add_model" type="button" class="apihub_dialog_action" title="手动添加模型">
+                <i class="fa-solid fa-plus" aria-hidden="true"></i><span>添加</span>
+            </button>
+            <button id="apihub_btn_fetch_models" type="button" class="apihub_dialog_action" title="从当前连接拉取模型">
+                <i class="fa-solid fa-rotate" aria-hidden="true"></i><span>Fetch</span>
+            </button>
+            <button id="apihub_btn_default_models" type="button" class="apihub_dialog_action" title="恢复默认模型列表">
+                <i class="fa-solid fa-bars" aria-hidden="true"></i><span>Default</span>
+            </button>
+        </div>
+    </dialog>
 
     <!-- Action buttons -->
     <div class="apihub_section">
