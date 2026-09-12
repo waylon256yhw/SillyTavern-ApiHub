@@ -2148,6 +2148,7 @@ function bindEvents() {
     });
     $('#apihub_model_search_clear').on('click', () => {
         modelPickerQuery = '';
+        $('#apihub_model_search').val('');
         renderModelPicker(getSelectedConnection());
         $('#apihub_model_search').trigger('focus');
     });

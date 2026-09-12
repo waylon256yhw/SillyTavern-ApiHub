@@ -546,6 +546,14 @@
     padding-right: 34px;
 }
 
+.apihub_model_search::-webkit-search-cancel-button,
+.apihub_model_search::-webkit-search-decoration,
+.apihub_model_search::-webkit-search-results-button,
+.apihub_model_search::-webkit-search-results-decoration {
+    -webkit-appearance: none;
+    display: none;
+}
+
 .apihub_model_search_icon {
     position: absolute;
     left: 12px;
