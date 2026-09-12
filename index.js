@@ -481,6 +481,47 @@ async function runSlashCommand(command, argument) {
 }
 
 /**
+ * Apply the current Chat Completion preset and wait for ST to finish applying it.
+ * The native /preset command triggers an asynchronous change handler but does not
+ * await that handler itself.
+ */
+async function applyChatPresetAndWait(presetName) {
+    const currentPreset = await runSlashCommand('preset', '') || '';
+    if (!presetName || currentPreset === presetName) return currentPreset;
+
+    const eventName = event_types.OAI_PRESET_CHANGED_AFTER;
+    let timer = null;
+    let cleanup = () => {};
+    const applied = new Promise(resolve => {
+        const onApplied = () => {
+            cleanup();
+            resolve(true);
+        };
+
+        cleanup = () => {
+            if (timer) window.clearTimeout(timer);
+            eventSource.removeListener(eventName, onApplied);
+        };
+
+        eventSource.on(eventName, onApplied);
+        timer = window.setTimeout(() => {
+            cleanup();
+            console.warn(`[ApiHub] Timed out waiting for Chat Completion preset "${presetName}" to apply.`);
+            resolve(false);
+        }, 5000);
+    });
+
+    const result = await runSlashCommand('preset', presetName);
+    if (result && result !== currentPreset) {
+        await applied;
+    } else {
+        cleanup();
+    }
+
+    return result;
+}
+
+/**
  * Read current preset/regex-preset/prompt-post-processing from ST state.
  * @returns {Promise<{preset: string, regexPreset: string, promptPostProcessing: string}>}
  */
@@ -724,7 +765,7 @@ async function activateConnection(id) {
 
     // Apply preset FIRST (before connection fields) — preset may overwrite oai_settings
     // when bind_preset_to_connection is enabled. We reapply our fields after.
-    if (conn.preset) await runSlashCommand('preset', conn.preset);
+    if (conn.preset) await applyChatPresetAndWait(conn.preset);
     await syncConnectionRuntime(conn);
 
     // Apply regex preset only when it actually changes (avoids chat reloads on every edit)
@@ -2175,7 +2216,7 @@ async function restoreState() {
     renderConnectionDetails();
     renderUrlPreview();
     renderCustomParams();
-    await syncConnectionRuntime(getConnection(activeId), { markActive: true });
+    await activateConnectionForCurrentMode(activeId);
     renderUI();
 }
 
