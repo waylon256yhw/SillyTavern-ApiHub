@@ -1,5 +1,7 @@
 apihub-*.json
 *.jpg
 AGENTS.md
+.commandcode/
+docs/debug.md
 .codex
 .serena/
