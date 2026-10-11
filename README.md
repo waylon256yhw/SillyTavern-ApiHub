@@ -90,13 +90,19 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 
 ### 7. 原生密钥库批量工具
 
-插件会前端 patch 原生密钥管理弹窗，新增：
+插件接管 API Hub 和原生密钥管理按钮，直接打开分页管理窗口；密钥仍保存在 SillyTavern 原生密钥库中。
 
-- 批量选中
-- 全选 / 清空
+- 每页显示 50 条，支持按标签 / ID 搜索，避免一次渲染整个密钥库
+- 跨页保留选择，支持“选择本页”和“全选搜索结果”
+- 导出和删除包含其他页已选中的条目
+
 - 批量导入
 - 批量导出
 - 批量删除
+
+导入按密钥值去重，导出和去重共用整库读取结果，不再逐条请求明文。导入、导出与复制明文需要开启 `allowKeysExposure`；未开启时仍可浏览、选择和管理密钥。
+
+批量导入、删除会显示进度，可停止后续操作；已完成的修改不会撤销。出现失败时停止并报告实际完成数量，随后统一同步原生状态。SillyTavern 后端仍逐条写文件，因此大量删除仍需要时间。
 
 同时保留原生单项操作：
 
@@ -105,6 +111,8 @@ git clone https://github.com/waylon256yhw/SillyTavern-ApiHub
 - 复制明文
 - 重命名
 - 删除
+
+列表只显示密钥末尾预览。连接绑定跟随管理窗口的实际生命周期，关闭窗口后结束本次绑定操作。
 
 ### 8. 导入 / 导出 / 调试
 
@@ -173,6 +181,21 @@ SillyTavern 默认不允许前端读取原生密钥明文。不开启时：
 - API Hub 连接导出文件可能包含明文密钥
 - 原生密钥库批量导出文件同样包含明文密钥
 - 请把这些导出文件视为敏感信息妥善保管
+
+## 开发检查
+
+密钥窗口位于 `secret-manager.js`，密钥读取与批量写入位于 `secret-vault.js`，原生状态及事件衔接留在 `index.js`。
+
+```bash
+node --check index.js
+node --check url-utils.js
+node --check secret-manager.js
+node --check secret-vault.js
+node --test tests/secret-vault.test.mjs
+git diff --check
+```
+
+密钥相关修改还应在 SillyTavern 页面验证分页、跨页导出、连接绑定与批量操作；使用独立测试数据，不向日常密钥库灌入测试记录。
 
 ## 适合分享给用户的定位
 

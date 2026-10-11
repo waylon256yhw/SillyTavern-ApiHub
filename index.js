@@ -8,13 +8,14 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { oai_settings, chat_completion_sources, proxies } from '../../../openai.js';
 import { saveSettingsDebounced, getRequestHeaders, eventSource, event_types } from '../../../../script.js';
-import { SECRET_KEYS, writeSecret, rotateSecret, renameSecret, secret_state, deleteSecret, canViewSecrets } from '../../../secrets.js';
+import { SECRET_KEYS, writeSecret, rotateSecret, secret_state, readSecretState, canViewSecrets } from '../../../secrets.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
 import { SlashCommandAbortController } from '../../../slash-commands/SlashCommandAbortController.js';
 import { SlashCommandDebugController } from '../../../slash-commands/SlashCommandDebugController.js';
-import { copyText } from '../../../utils.js';
+import { createSecretVault } from './secret-vault.js';
+import { createSecretManager } from './secret-manager.js';
 import { computeUrlPreview, normalizeUrl, FORMAT_OPTIONS, getFormatOption, DEFAULT_MODELS } from './url-utils.js';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -46,15 +47,81 @@ const EMPTY_SECRET_LABEL = 'ApiHub Empty';
 // Cache the last value we know was synced to each native secret slot.
 // This avoids creating duplicate secret entries on every activation.
 const syncedSecretValues = new Map();
-const secretValueCache = new Map();
-const SECRET_BINDING_WINDOW_MS = 120000;
-let pendingSecretBinding = null;
-let pendingSecretBindingToken = 0;
-const bulkSecretSelections = new Map();
-let secretManagerObserver = null;
+let reconcilingSecretKey = null;
 let secretExposureEnabled = null;
 let secretExposureCheckPromise = null;
 let secretExposureNoticeShown = false;
+
+const SECRET_CHANGE_EVENTS = {
+    write: event_types.SECRET_WRITTEN,
+    rotate: event_types.SECRET_ROTATED,
+    delete: event_types.SECRET_DELETED,
+    rename: event_types.SECRET_EDITED,
+};
+
+const secretVault = createSecretVault({
+    getState: () => secret_state,
+    canRead: canViewSecrets,
+    async request(action, body = {}) {
+        const response = await fetch(`/api/secrets/${action}`, {
+            method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body),
+        });
+        if (!response.ok) throw Object.assign(new Error(`密钥库请求失败（${response.status}）`), { status: response.status });
+        return response.status === 204 ? null : response.json();
+    },
+    async reconcile(key, changes) {
+        clearSecretCachesForKey(key);
+        const previous = secret_state;
+        await readSecretState();
+        // Native readSecretState swallows transport errors. Its live binding is
+        // replaced on success; never report a successful sync of stale state.
+        if (secret_state === previous) throw new Error('原生密钥状态刷新失败');
+        if (changes.has('write')) $(`input[list="${key}_datalist"]`).val('').trigger('input');
+        if (changes.has('delete') || changes.has('rotate')) $('#main_api').trigger('change');
+        const events = new Set([...changes].map(action => SECRET_CHANGE_EVENTS[action]));
+        // Native subscribers receive each kind of notification with final state.
+        // Our own connection synchronization runs once for the whole operation.
+        reconcilingSecretKey = key;
+        try {
+            for (const eventName of events) await eventSource.emit(eventName, key);
+        } finally {
+            reconcilingSecretKey = null;
+        }
+        await handleSecretChange(key, events);
+    },
+});
+const secretManager = createSecretManager(secretVault);
+
+function initSecretManager() {
+    const keys = new Set(Object.values(SECRET_KEYS));
+    document.addEventListener('click', event => {
+        const button = event.target instanceof Element ? event.target.closest('.manage-api-keys') : null;
+        // Some native buttons (e.g. translation) update jQuery data without
+        // setting an HTML attribute. Match the native handler's lookup.
+        const key = button ? $(button).data('key') : null;
+        if (!key || !keys.has(key)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void secretManager.open(key).catch(error => toastr.error(error.message || '无法打开密钥管理'));
+    }, true);
+}
+
+async function handleSecretChange(key, events) {
+    clearSecretCachesForKey(key);
+    secretManager.refresh(key);
+    const binding = secretManager.binding;
+    if (binding?.secretKey === key
+        && (events.has(event_types.SECRET_WRITTEN) || events.has(event_types.SECRET_ROTATED))) {
+        await bindConnectionToActiveSecret(binding.connectionId, key);
+    }
+    const selected = getSelectedConnection();
+    if (!selected || getSecretKeyForFormat(selected.format) !== key) return;
+    if (selected.id === getActiveConnectionId() && selected.secretId) {
+        await activateConnectionForCurrentMode(selected.id);
+        return;
+    }
+    renderConnectionDetails();
+}
 
 // ── Settings helpers ───────────────────────────────────────────────
 
@@ -123,17 +190,9 @@ function requiresReadableSecretValue(format) {
     return format === 'anthropic' || format === 'gemini';
 }
 
-function getSecretValueCacheKey(secretKey, secretId) {
-    return `${secretKey}:${secretId}`;
-}
-
 function clearSecretCachesForKey(secretKey) {
     syncedSecretValues.delete(secretKey);
-    for (const cacheKey of secretValueCache.keys()) {
-        if (cacheKey.startsWith(`${secretKey}:`)) {
-            secretValueCache.delete(cacheKey);
-        }
-    }
+    secretVault.invalidate();
 }
 
 async function ensureSecretExposureStatus({ notify = false } = {}) {
@@ -168,51 +227,9 @@ async function ensureSecretExposureStatus({ notify = false } = {}) {
     return secretExposureEnabled === true;
 }
 
-function countOpenDialogs() {
-    return document.querySelectorAll('dialog[open]:not([closing])').length;
-}
-
-function startPendingSecretBinding(connectionId, secretKey) {
-    const token = ++pendingSecretBindingToken;
-    const baselineOpenDialogs = countOpenDialogs();
-    pendingSecretBinding = {
-        token,
-        connectionId,
-        secretKey,
-        baselineOpenDialogs,
-        sawDialog: false,
-        expiresAt: Date.now() + SECRET_BINDING_WINDOW_MS,
-    };
-
-    const poll = () => {
-        if (!pendingSecretBinding || pendingSecretBinding.token !== token) {
-            return;
-        }
-
-        const openDialogs = countOpenDialogs();
-        if (openDialogs > baselineOpenDialogs) {
-            pendingSecretBinding.sawDialog = true;
-        }
-
-        if (pendingSecretBinding.sawDialog && openDialogs <= baselineOpenDialogs) {
-            pendingSecretBinding = null;
-            return;
-        }
-
-        if (Date.now() >= pendingSecretBinding.expiresAt) {
-            pendingSecretBinding = null;
-            return;
-        }
-
-        window.setTimeout(poll, 250);
-    };
-
-    window.setTimeout(poll, 0);
-}
-
 function getSecretReadFailureMessage(status) {
     if (status === 403) {
-        return '无法读取绑定的密钥值（/api/secrets/find 返回 403）。如果你已经开启 allowKeysExposure，请确认修改的是当前实例实际使用的 config.yaml，并且已完整重启该实例。';
+        return '无法读取绑定的密钥值。如果你已经开启 allowKeysExposure，请确认修改的是当前实例实际使用的 config.yaml，并且已完整重启该实例。';
     }
 
     if (status === 404) {
@@ -220,18 +237,10 @@ function getSecretReadFailureMessage(status) {
     }
 
     if (status) {
-        return `无法读取绑定的密钥值（/api/secrets/find 返回 ${status}）。请检查浏览器控制台和 SillyTavern 服务端日志。`;
+        return `无法读取绑定的密钥值（状态码 ${status}）。请检查浏览器控制台和 SillyTavern 服务端日志。`;
     }
 
-    return '无法读取绑定的密钥值（/api/secrets/find 请求失败）。请检查浏览器控制台和 SillyTavern 服务端日志。';
-}
-
-function getBulkSelectionForKey(secretKey) {
-    if (!bulkSecretSelections.has(secretKey)) {
-        bulkSecretSelections.set(secretKey, new Set());
-    }
-
-    return bulkSecretSelections.get(secretKey);
+    return '无法读取绑定的密钥值（密钥库请求失败）。请检查浏览器控制台和 SillyTavern 服务端日志。';
 }
 
 // ── Connection CRUD ────────────────────────────────────────────────
@@ -387,7 +396,7 @@ async function matchesActiveConnectionRuntime(conn) {
         if (conn.secretId) {
             if (activeSecret?.id !== conn.secretId) return false;
         } else {
-            const { value: activeValue, status } = await fetchSecretValue(secretKey);
+            const { value: activeValue, status } = await secretVault.readValue(secretKey);
             if (status !== 403 && status !== null && (activeValue ?? '') !== (conn.apiKey || '')) return false;
         }
     }
@@ -570,74 +579,6 @@ async function readCurrentPresets() {
     return { preset, regexPreset, promptPostProcessing };
 }
 
-async function fetchSecretValue(secretKey, secretId) {
-    const canRead = await ensureSecretExposureStatus();
-    if (!canRead) {
-        return { value: null, status: 403 };
-    }
-
-    try {
-        const response = await fetch('/api/secrets/find', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ key: secretKey, id: secretId }),
-        });
-
-        if (!response.ok) {
-            return { value: null, status: response.status };
-        }
-
-        const data = await response.json();
-        return { value: data.value, status: response.status };
-    } catch {
-        return { value: null, status: null };
-    }
-}
-
-async function readSecretValue(secretKey, secretId) {
-    if (!secretKey || !secretId) return { value: null, status: null };
-    const cacheKey = getSecretValueCacheKey(secretKey, secretId);
-    if (secretValueCache.has(cacheKey)) {
-        return { value: secretValueCache.get(cacheKey), status: 200 };
-    }
-
-    const { value, status } = await fetchSecretValue(secretKey, secretId);
-    if (value !== null) {
-        secretValueCache.set(cacheKey, value);
-    }
-    return { value, status };
-}
-
-async function findReusableEmptySecret(secretKey) {
-    const secrets = secret_state[secretKey];
-    if (!Array.isArray(secrets)) return null;
-
-    const candidates = secrets.filter(secret => secret.label === EMPTY_SECRET_LABEL);
-    for (const secret of candidates) {
-        const { value } = await readSecretValue(secretKey, secret.id);
-        if (value === '') {
-            return secret;
-        }
-    }
-
-    return null;
-}
-
-async function findSecretEntryByValue(secretKey, desiredValue) {
-    if (!secretKey) return null;
-    const secrets = secret_state[secretKey];
-    if (!Array.isArray(secrets)) return null;
-
-    for (const secret of secrets) {
-        const { value } = await readSecretValue(secretKey, secret.id);
-        if (value === desiredValue) {
-            return secret;
-        }
-    }
-
-    return null;
-}
-
 async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhenMissing = true, activateIfActive = false } = {}) {
     const conn = getConnection(connectionId);
     if (!conn) return false;
@@ -653,7 +594,7 @@ async function bindConnectionToActiveSecret(connectionId, secretKey, { clearWhen
         return false;
     }
 
-    const { value: secretValue, status } = await readSecretValue(secretKey, activeSecret.id);
+    const { value: secretValue, status } = await secretVault.readValue(secretKey, activeSecret.id);
 
     if (secretValue === null && requiresReadableSecretValue(conn.format)) {
         toastr.warning(getSecretReadFailureMessage(status));
@@ -708,7 +649,7 @@ async function resolveConnectionApiKey(conn) {
             updateConnection(conn.id, { secretId: '', apiKey: fallbackApiKey });
             return { apiKey: fallbackApiKey, readStatus: 404 };
         } else {
-            const { value: secretValue, status } = await readSecretValue(secretKey, conn.secretId);
+            const { value: secretValue, status } = await secretVault.readValue(secretKey, conn.secretId);
             if (secretValue !== null) {
                 return { apiKey: secretValue, readStatus: 200 };
             }
@@ -748,7 +689,7 @@ async function syncNativeSecretSlot(conn) {
     const cachedValue = syncedSecretValues.get(secretKey);
 
     if (!desiredValue) {
-        const { value: activeValue, status } = await fetchSecretValue(secretKey);
+        const { value: activeValue, status } = await secretVault.readValue(secretKey);
         if (activeValue === '') {
             syncedSecretValues.set(secretKey, '');
             return;
@@ -759,7 +700,7 @@ async function syncNativeSecretSlot(conn) {
             return;
         }
 
-        const reusableEmptySecret = await findReusableEmptySecret(secretKey);
+        const reusableEmptySecret = await secretVault.findByValue(secretKey, '', EMPTY_SECRET_LABEL);
         if (reusableEmptySecret) {
             if (activeSecret?.id !== reusableEmptySecret.id) {
                 await rotateSecret(secretKey, reusableEmptySecret.id);
@@ -775,7 +716,7 @@ async function syncNativeSecretSlot(conn) {
         return;
     }
 
-    const reusableSecret = await findSecretEntryByValue(secretKey, desiredValue);
+    const reusableSecret = await secretVault.findByValue(secretKey, desiredValue);
     if (reusableSecret) {
         if (activeSecret?.id !== reusableSecret.id) {
             await rotateSecret(secretKey, reusableSecret.id);
@@ -793,7 +734,7 @@ async function syncNativeSecretSlot(conn) {
         return;
     }
 
-    const { value: activeValue } = await fetchSecretValue(secretKey);
+    const { value: activeValue } = await secretVault.readValue(secretKey);
 
     if (activeValue !== null && activeValue === desiredValue) {
         syncedSecretValues.set(secretKey, desiredValue);
@@ -1017,20 +958,6 @@ async function fetchModelsViaNativeConnect(conn) {
     renderUI();
 }
 
-// ── Native Secret Integration ─────────────────────────────────────
-
-/**
- * Open ST's native key manager dialog for the current connection's format.
- */
-function openNativeKeyManager(format) {
-    const secretKey = getSecretKeyForFormat(format);
-    if (!secretKey) return;
-    const btn = $(`<div class="manage-api-keys" data-key="${secretKey}" style="display:none;"></div>`);
-    $('body').append(btn);
-    btn.trigger('click');
-    btn.remove();
-}
-
 // ── Import / Export ────────────────────────────────────────────────
 
 function exportConnections() {
@@ -1135,435 +1062,6 @@ function exportDebug() {
     a.download = `apihub-debug-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-}
-
-function getSecretManagerKey(manager) {
-    return manager.find('.secretKeyManagerInfo code').text().trim();
-}
-
-function getSecretManagerItems(manager) {
-    return manager.find('.secretKeyManagerList .secretKeyManagerItem');
-}
-
-function getSecretManagerItemId(item) {
-    return item.find('.secretKeyManagerItemId').text().trim();
-}
-
-function getSecretManagerItemLabel(item) {
-    return item.find('.secretKeyManagerItemHeader strong').first().text().trim();
-}
-
-async function copySecretManagerText(text, successMessage) {
-    try {
-        await copyText(text);
-        toastr.info(successMessage);
-    } catch {
-        toastr.error('复制失败，请检查浏览器权限');
-    }
-}
-
-function getSecretManagerRenderSignature(secretKey) {
-    const secrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
-    const selection = [...getBulkSelectionForKey(secretKey)].sort();
-    return JSON.stringify({
-        secrets: secrets.map(secret => ({
-            id: secret.id,
-            label: secret.label || '',
-            value: secret.value || '',
-            active: !!secret.active,
-        })),
-        selection,
-    });
-}
-
-function updateSecretManagerBulkUi(manager) {
-    const secretKey = getSecretManagerKey(manager);
-    if (!secretKey) return;
-
-    const selection = getBulkSelectionForKey(secretKey);
-    let selectedVisibleCount = 0;
-    const visibleIds = new Set();
-    const items = getSecretManagerItems(manager);
-    items.each(function () {
-        const item = $(this);
-        const id = getSecretManagerItemId(item);
-        visibleIds.add(id);
-        const checked = selection.has(id);
-        item.find('.apihub_secret_bulk_checkbox').prop('checked', checked);
-        item.toggleClass('apihub_secret_selected', checked);
-        if (checked) selectedVisibleCount++;
-    });
-
-    for (const id of [...selection]) {
-        if (!visibleIds.has(id)) {
-            selection.delete(id);
-        }
-    }
-
-    manager.find('.apihub_secret_bulk_count').text(`${selectedVisibleCount} 已选`);
-    const hasSelection = selection.size > 0;
-    manager.find('.apihub_secret_bulk_export, .apihub_secret_bulk_delete, .apihub_secret_bulk_clear').toggleClass('disabled', !hasSelection);
-}
-
-function buildSecretManagerItem(manager, secretKey, secret) {
-    const selection = getBulkSelectionForKey(secretKey);
-    const checked = selection.has(secret.id);
-    const item = $('<div class="secretKeyManagerItem"></div>')
-        .attr('data-apihub-bulk-patched', 'true')
-        .toggleClass('active', !!secret.active)
-        .toggleClass('apihub_secret_selected', checked);
-    const toggle = $(`
-        <label class="apihub_secret_bulk_toggle">
-            <input type="checkbox" class="apihub_secret_bulk_checkbox" />
-        </label>
-    `);
-    toggle.find('input').prop('checked', checked).on('change', function () {
-        if ($(this).prop('checked')) {
-            selection.add(secret.id);
-        } else {
-            selection.delete(secret.id);
-        }
-        updateSecretManagerBulkUi(manager);
-    });
-
-    const info = $('<div class="secretKeyManagerItemInfo"></div>');
-    const header = $('<div class="secretKeyManagerItemHeader"></div>');
-    $('<strong></strong>').text(secret.label || '').appendTo(header);
-    $('<small></small>').text(secret.value || '').appendTo(header);
-    const subtitle = $('<div class="secretKeyManagerItemSubtitle"></div>');
-    subtitle.append('<strong>ID:</strong>');
-    const idSpan = $('<span class="secretKeyManagerItemId" title="Copy ID"></span>').text(secret.id);
-    idSpan.on('click', async () => {
-        await copySecretManagerText(secret.id, '密钥 ID 已复制');
-    });
-    subtitle.append(idSpan);
-    info.append(header, subtitle);
-
-    const actions = $('<div class="secretKeyManagerItemActions"></div>');
-    const row1 = $('<div class="secretKeyManagerItemActionsRow"></div>');
-    const rotateBtn = $('<button class="menu_button menu_button_icon" type="button" title="Select"><i class="fa-fw fa-solid fa-check"></i></button>')
-        .toggleClass('disabled', !!secret.active)
-        .on('click', async function () {
-            if ($(this).hasClass('disabled')) return;
-            await rotateSecret(secretKey, secret.id);
-            renderSecretManagerItems(manager);
-        });
-    const copyBtn = $('<button class="menu_button menu_button_icon" type="button" title="Copy"><i class="fa-fw fa-solid fa-copy"></i></button>')
-        .on('click', async () => {
-            const { value, status } = await fetchSecretValue(secretKey, secret.id);
-            if (value === null) {
-                toastr.error(getSecretReadFailureMessage(status));
-                return;
-            }
-            await copySecretManagerText(value, '密钥值已复制');
-        });
-    row1.append(rotateBtn, copyBtn);
-
-    const row2 = $('<div class="secretKeyManagerItemActionsRow"></div>');
-    const renameBtn = $('<button class="menu_button menu_button_icon" type="button" title="Rename"><i class="fa-fw fa-solid fa-pen-to-square"></i></button>')
-        .on('click', async () => {
-            const label = await callGenericPopup('输入新的密钥标签：', POPUP_TYPE.INPUT, secret?.label || '');
-            if (label === null) return;
-            const nextLabel = String(label).trim();
-            if (!nextLabel) return;
-            await renameSecret(secretKey, secret.id, nextLabel);
-            renderSecretManagerItems(manager);
-        });
-    const deleteBtn = $('<button class="menu_button menu_button_icon" type="button" title="Delete"><i class="fa-fw fa-solid fa-trash"></i></button>')
-        .on('click', async () => {
-            const confirmed = await callGenericPopup(`确定删除密钥“${secret?.label || secret.id}”？此操作不可撤销。`, POPUP_TYPE.CONFIRM);
-            if (!confirmed) return;
-            await deleteSecret(secretKey, secret.id);
-            selection.delete(secret.id);
-            renderSecretManagerItems(manager);
-        });
-    row2.append(renameBtn, deleteBtn);
-
-    actions.append(row1, row2);
-    item.append(toggle, info, actions);
-    return item;
-}
-
-function renderSecretManagerItems(manager) {
-    const secretKey = getSecretManagerKey(manager);
-    if (!secretKey) return;
-
-    const list = manager.find('.secretKeyManagerList');
-    if (!list.length) return;
-    const signature = getSecretManagerRenderSignature(secretKey);
-    if (manager.attr('data-apihub-bulk-signature') === signature) {
-        updateSecretManagerBulkUi(manager);
-        return;
-    }
-
-    const secrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
-    const previousScrollTop = list.scrollTop();
-    const items = secrets.map(secret => buildSecretManagerItem(manager, secretKey, secret));
-    list.empty().append(items).scrollTop(previousScrollTop);
-    manager.find('.secretKeyManagerListEmpty').toggle(secrets.length === 0);
-    manager.attr('data-apihub-bulk-signature', signature);
-    updateSecretManagerBulkUi(manager);
-}
-
-function downloadJson(filename, data) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
-async function exportSelectedSecrets(manager) {
-    const secretKey = getSecretManagerKey(manager);
-    const selection = getBulkSelectionForKey(secretKey);
-    const ids = [...selection];
-    if (ids.length === 0) {
-        toastr.warning('请先选择要导出的密钥');
-        return;
-    }
-
-    const itemsById = new Map();
-    getSecretManagerItems(manager).each(function () {
-        const item = $(this);
-        itemsById.set(getSecretManagerItemId(item), item);
-    });
-
-    const secrets = [];
-    for (const id of ids) {
-        const item = itemsById.get(id);
-        if (!item) continue;
-        const { value, status } = await fetchSecretValue(secretKey, id);
-        if (value === null) {
-            toastr.error(getSecretReadFailureMessage(status));
-            return;
-        }
-
-        secrets.push({
-            id,
-            label: getSecretManagerItemLabel(item),
-            value,
-            active: item.hasClass('active'),
-        });
-    }
-
-    downloadJson(`secrets-${secretKey}-${Date.now()}.json`, {
-        key: secretKey,
-        exportedAt: new Date().toISOString(),
-        secrets,
-    });
-    toastr.success(`已导出 ${secrets.length} 个密钥`);
-}
-
-async function importSecretsIntoManager(manager) {
-    const secretKey = getSecretManagerKey(manager);
-    if (!secretKey) return;
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.onchange = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        try {
-            const raw = JSON.parse(await file.text());
-            const secrets = Array.isArray(raw) ? raw : raw?.secrets;
-            if (!Array.isArray(secrets) || secrets.length === 0) {
-                toastr.warning('导入失败：文件中没有密钥条目');
-                return;
-            }
-
-            if (raw?.key && raw.key !== secretKey) {
-                toastr.warning(`导入失败：该文件属于 ${raw.key}，当前密钥槽是 ${secretKey}`);
-                return;
-            }
-
-            let imported = 0;
-            let reused = 0;
-            let activeImportedId = '';
-            const selectedIds = new Set();
-            const existingByValue = new Map();
-            const existingSecrets = Array.isArray(secret_state[secretKey]) ? secret_state[secretKey] : [];
-            for (const existingSecret of existingSecrets) {
-                const { value } = await readSecretValue(secretKey, existingSecret.id);
-                if (value !== null && !existingByValue.has(value)) {
-                    existingByValue.set(value, existingSecret.id);
-                }
-            }
-
-            for (const secret of secrets) {
-                const value = typeof secret?.value === 'string' ? secret.value : null;
-                if (value === null) continue;
-                const label = typeof secret?.label === 'string' ? secret.label.trim() : '';
-                const existingId = existingByValue.get(value);
-                if (existingId) {
-                    reused++;
-                    selectedIds.add(existingId);
-                    if (secret.active) {
-                        activeImportedId = existingId;
-                    }
-                    continue;
-                }
-                const id = await writeSecret(secretKey, value, label, { allowEmpty: true });
-                if (id) {
-                    imported++;
-                    existingByValue.set(value, id);
-                    selectedIds.add(id);
-                    if (secret.active) {
-                        activeImportedId = id;
-                    }
-                }
-            }
-
-            if (activeImportedId) {
-                await rotateSecret(secretKey, activeImportedId);
-            }
-
-            if (imported > 0 || reused > 0) {
-                const selection = getBulkSelectionForKey(secretKey);
-                selection.clear();
-                for (const id of selectedIds) {
-                    selection.add(id);
-                }
-                renderSecretManagerItems(manager);
-                const message = reused > 0
-                    ? `已导入 ${imported} 个密钥，复用 ${reused} 个已有密钥`
-                    : `已导入 ${imported} 个密钥`;
-                toastr.success(message);
-            } else {
-                toastr.warning('导入失败：没有有效密钥条目');
-            }
-        } catch {
-            toastr.error('导入失败：文件格式无效');
-        }
-    };
-    input.click();
-}
-
-async function deleteSelectedSecrets(manager) {
-    const secretKey = getSecretManagerKey(manager);
-    const selection = getBulkSelectionForKey(secretKey);
-    const ids = [...selection];
-    if (ids.length === 0) {
-        toastr.warning('请先选择要删除的密钥');
-        return;
-    }
-
-    const confirmed = await callGenericPopup(`确定删除选中的 ${ids.length} 个密钥？此操作不可撤销。`, POPUP_TYPE.CONFIRM);
-    if (!confirmed) return;
-
-    for (const id of ids) {
-        await deleteSecret(secretKey, id);
-    }
-    selection.clear();
-    renderSecretManagerItems(manager);
-    toastr.success(`已删除 ${ids.length} 个密钥`);
-}
-
-function mountSecretManagerToolbar(manager) {
-    if (manager.attr('data-apihub-bulk-toolbar') === 'true') return;
-    manager.attr('data-apihub-bulk-toolbar', 'true');
-
-    const toolbar = $(`
-        <div class="apihub_secret_bulk_bar">
-            <div class="apihub_secret_bulk_group">
-                <button class="menu_button menu_button_icon apihub_secret_bulk_select_all" type="button">
-                    <i class="fa-solid fa-check-double"></i>
-                    <span>全选</span>
-                </button>
-                <button class="menu_button menu_button_icon apihub_secret_bulk_clear disabled" type="button">
-                    <i class="fa-solid fa-xmark"></i>
-                    <span>清空</span>
-                </button>
-            </div>
-            <div class="apihub_secret_bulk_group">
-                <button class="menu_button menu_button_icon apihub_secret_bulk_import" type="button">
-                    <i class="fa-solid fa-file-import"></i>
-                    <span>导入</span>
-                </button>
-                <button class="menu_button menu_button_icon apihub_secret_bulk_export disabled" type="button">
-                    <i class="fa-solid fa-file-export"></i>
-                    <span>导出</span>
-                </button>
-                <button class="menu_button menu_button_icon apihub_secret_bulk_delete disabled" type="button">
-                    <i class="fa-solid fa-trash-can"></i>
-                    <span>删除</span>
-                </button>
-            </div>
-            <div class="apihub_secret_bulk_count">0 已选</div>
-        </div>
-    `);
-
-    toolbar.find('.apihub_secret_bulk_select_all').on('click', () => {
-        const secretKey = getSecretManagerKey(manager);
-        const selection = getBulkSelectionForKey(secretKey);
-        getSecretManagerItems(manager).each(function () {
-            selection.add(getSecretManagerItemId($(this)));
-        });
-        updateSecretManagerBulkUi(manager);
-    });
-
-    toolbar.find('.apihub_secret_bulk_clear').on('click', function () {
-        if ($(this).hasClass('disabled')) return;
-        const secretKey = getSecretManagerKey(manager);
-        getBulkSelectionForKey(secretKey).clear();
-        updateSecretManagerBulkUi(manager);
-    });
-
-    toolbar.find('.apihub_secret_bulk_export').on('click', async function () {
-        if ($(this).hasClass('disabled')) return;
-        await exportSelectedSecrets(manager);
-    });
-
-    toolbar.find('.apihub_secret_bulk_import').on('click', async () => {
-        await importSecretsIntoManager(manager);
-    });
-
-    toolbar.find('.apihub_secret_bulk_delete').on('click', async function () {
-        if ($(this).hasClass('disabled')) return;
-        await deleteSelectedSecrets(manager);
-    });
-
-    manager.find('.secretKeyManagerHeader').after(toolbar);
-}
-
-function enhanceSecretManager(manager) {
-    if (!manager?.length) return;
-    mountSecretManagerToolbar(manager);
-    renderSecretManagerItems(manager);
-}
-
-function refreshOpenSecretManagers(secretKey = '') {
-    $('dialog .secretKeyManager').each(function () {
-        const manager = $(this);
-        if (secretKey && getSecretManagerKey(manager) !== secretKey) return;
-        enhanceSecretManager(manager);
-    });
-}
-
-function initSecretManagerPatch() {
-    refreshOpenSecretManagers();
-    if (secretManagerObserver) return;
-
-    secretManagerObserver = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-                if (!(node instanceof Element)) continue;
-
-                if (node.matches('.secretKeyManager')) {
-                    enhanceSecretManager($(node));
-                    continue;
-                }
-
-                const managers = node.querySelectorAll?.('.secretKeyManager');
-                if (!managers?.length) continue;
-                managers.forEach(manager => enhanceSecretManager($(manager)));
-            }
-        }
-    });
-    secretManagerObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 // ── Migration from native ST config ───────────────────────────────
@@ -1693,7 +1191,7 @@ async function migrateFromNative() {
                 if (!secretEntry) {
                     console.warn(`[ApiHub] Skipped migrating missing native secret binding for "${conn.name}".`);
                 } else if (requiresReadableSecretValue(format)) {
-                    const { value: secretValue } = await readSecretValue(secretKey, secretEntry.id);
+                    const { value: secretValue } = await secretVault.readValue(secretKey, secretEntry.id);
                     if (secretValue !== null) {
                         conn.secretId = secretEntry.id;
                         conn.apiKey = '';
@@ -2058,7 +1556,7 @@ function bindEvents() {
 
     // Connection selector — switch = activate
     $('#apihub_connection_select').on('change', async () => {
-        pendingSecretBinding = null;
+        secretManager.clearBinding();
         cancelFetch(); // cancel any in-flight model fetch
         const conn = getSelectedConnection();
         if (!conn) return;
@@ -2094,7 +1592,7 @@ function bindEvents() {
     // Endpoint input → live preview + debounced activate
     let endpointActivateTimer = null;
     $('#apihub_endpoint').on('input', function () {
-        pendingSecretBinding = null;
+        secretManager.clearBinding();
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { endpoint: $(this).val() });
@@ -2107,7 +1605,7 @@ function bindEvents() {
     // API key input → debounced activate
     let keyActivateTimer = null;
     $('#apihub_apikey').on('input', function () {
-        pendingSecretBinding = null;
+        secretManager.clearBinding();
         const conn = getSelectedConnection();
         if (!conn) return;
         updateConnection(conn.id, { apiKey: $(this).val(), secretId: '' });
@@ -2253,17 +1751,20 @@ function bindEvents() {
         }
     });
 
-    // Open native key manager
+    // Bind to the current slot as before, then own the window's lifetime.
     $('#apihub_btn_manage_keys').on('click', async () => {
         const conn = getSelectedConnection();
         if (!conn) return;
         const secretKey = getSecretKeyForFormat(conn.format);
-        startPendingSecretBinding(conn.id, secretKey);
-        await bindConnectionToActiveSecret(conn.id, secretKey, {
-            clearWhenMissing: false,
-            activateIfActive: true,
-        });
-        openNativeKeyManager(conn.format);
+        try {
+            await bindConnectionToActiveSecret(conn.id, secretKey, {
+                clearWhenMissing: false,
+                activateIfActive: true,
+            });
+            await secretManager.open(secretKey, { connectionId: conn.id, name: getFormatOption(conn.format).label });
+        } catch (error) {
+            toastr.error(error.message || '无法打开密钥管理');
+        }
     });
 
     // Import/Export
@@ -2425,8 +1926,8 @@ jQuery(async () => {
     eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, applyActiveConnectionExclusions);
     eventSource.makeLast(event_types.CHAT_COMPLETION_SETTINGS_READY, applyActiveConnectionExclusions);
 
-    // Patch the native secret manager with bulk tools.
-    initSecretManagerPatch();
+    // Intercept native entry points before their full-list renderer runs.
+    initSecretManager();
 
     // Check key exposure once at startup so later secret reads can fail locally.
     await ensureSecretExposureStatus({ notify: true });
@@ -2434,30 +1935,10 @@ jQuery(async () => {
     // Restore saved state
     await restoreState();
 
-    // Native key manager actions can change the active secret outside ApiHub.
-    [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED, event_types.SECRET_DELETED, event_types.SECRET_EDITED].forEach(eventName => {
-        eventSource.on(eventName, async (key) => {
-            clearSecretCachesForKey(key);
-            refreshOpenSecretManagers(key);
-
-            if (pendingSecretBinding && pendingSecretBinding.expiresAt < Date.now()) {
-                pendingSecretBinding = null;
-            }
-
-            const shouldBindPending = pendingSecretBinding?.secretKey === key
-                && [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED].includes(eventName);
-            if (shouldBindPending) {
-                await bindConnectionToActiveSecret(pendingSecretBinding.connectionId, key);
-            }
-
-            const selected = getSelectedConnection();
-            if (!selected) return;
-            if (getSecretKeyForFormat(selected.format) !== key) return;
-            if (selected.id === getActiveConnectionId() && selected.secretId) {
-                await activateConnectionForCurrentMode(selected.id);
-                return;
-            }
-            renderConnectionDetails();
+    // External/native mutations still enter the same state synchronization path.
+    Object.values(SECRET_CHANGE_EVENTS).forEach(eventName => {
+        eventSource.on(eventName, async key => {
+            if (reconcilingSecretKey !== key) await handleSecretChange(key, new Set([eventName]));
         });
     });
 

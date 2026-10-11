@@ -364,6 +364,69 @@
 }
 
 /* Secret manager bulk tools */
+.apihub_secret_manager .menu_button {
+    width: auto;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.apihub_secret_manager .secretKeyManagerItemHeader {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.apihub_secret_manager .secretKeyManagerInfo code {
+    overflow-wrap: anywhere;
+}
+
+.apihub_secret_manager .secretKeyManagerItemInfo {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.apihub_secret_manager .secretKeyManagerItemId {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.apihub_secret_manager button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.apihub_secret_progress {
+    display: none;
+    padding: 6px 0;
+}
+
+.apihub_secret_progress button {
+    display: inline-block;
+    margin-left: 10px;
+}
+
+.apihub_secret_pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 0.85em;
+}
+
+@media (max-width: 600px) {
+    .apihub_secret_pager span {
+        flex-basis: 100%;
+        order: -1;
+        text-align: center;
+    }
+}
+
 .apihub_secret_bulk_bar {
     display: flex;
     align-items: center;
