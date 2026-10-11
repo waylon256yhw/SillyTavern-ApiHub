@@ -8,7 +8,7 @@ API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connectio
 - 让端点、模型、参数、预设、密钥状态能跟着连接保存，并按需联动切换
 - 尽量复用 SillyTavern 原生能力，而不是重造一套后端
 
-版本号以 `manifest.json` 为准。
+版本号以 `manifest.json` 为准，更新说明见 [更新记录](CHANGELOG.md)。
 
 ## 支持的格式
 

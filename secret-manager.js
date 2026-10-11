@@ -38,7 +38,9 @@ export function createSecretManager(vault) {
                 <div class="secretKeyManagerListEmpty">没有匹配的密钥</div>
                 <div class="apihub_secret_pager">
                     <button class="menu_button" type="button" data-action="previous">上一页</button>
-                    <span aria-live="polite"></span>
+                    <span class="apihub_secret_page_status" aria-live="polite" aria-atomic="true">
+                        <span class="apihub_secret_page_number"></span><span class="apihub_secret_page_totals"></span>
+                    </span>
                     <button class="menu_button" type="button" data-action="next">下一页</button>
                 </div>
             </div>
@@ -118,7 +120,8 @@ export function createSecretManager(vault) {
         const scrollTop = list.scrollTop();
         list.empty().append(session.visible.map(buildRow)).scrollTop(scrollTop);
         root.find('.secretKeyManagerListEmpty').toggle(session.visible.length === 0);
-        root.find('.apihub_secret_pager span').text(`${session.page + 1} / ${pages} 页 · ${session.filtered.length} 条匹配 / 共 ${records.length} 条`);
+        root.find('.apihub_secret_page_number').text(`${session.page + 1} / ${pages} 页`);
+        root.find('.apihub_secret_page_totals').text(` · ${session.filtered.length} 条匹配 / 共 ${records.length} 条`);
         root.find('button, input').prop('disabled', session.busy);
         root.find('[data-action="previous"]').prop('disabled', session.busy || session.page === 0);
         root.find('[data-action="next"]').prop('disabled', session.busy || session.page === pages - 1);

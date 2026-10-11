@@ -419,11 +419,44 @@
     font-size: 0.85em;
 }
 
-@media (max-width: 600px) {
-    .apihub_secret_pager span {
-        flex-basis: 100%;
-        order: -1;
-        text-align: center;
+.apihub_secret_page_status {
+    white-space: nowrap;
+}
+
+@media (max-width: 600px), (max-height: 500px) {
+    .apihub_secret_pager {
+        flex-wrap: nowrap;
+    }
+
+    /* Keep full counts available to screen readers without a second pager row. */
+    .apihub_secret_page_totals {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
+
+@media (max-height: 500px) {
+    .apihub_secret_manager {
+        gap: 3px;
+    }
+
+    .apihub_secret_manager .menu_button {
+        margin: 0;
+    }
+
+    .apihub_secret_manager .secretKeyManagerInfo {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+
+    .apihub_secret_manager .apihub_secret_bulk_bar {
+        padding: 0;
+        gap: 4px;
     }
 }
 
