@@ -20,6 +20,8 @@ API Hub 把 SillyTavern 原本分散在多个 Source、Reverse Proxy、Connectio
 
 ## 安装
 
+需要 **SillyTavern 1.17.0 或更新版本**。使用 1.14～1.16 的用户请先升级 SillyTavern；扩展管理器会阻止在低于最低要求的版本上加载 API Hub。
+
 在酒馆扩展管理器中通过 URL 安装：
 
 ```text

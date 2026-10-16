@@ -1,5 +1,6 @@
 {
     "display_name": "API Hub",
+    "minimum_client_version": "1.17.0",
     "loading_order": 2,
     "requires": [],
     "optional": [],
